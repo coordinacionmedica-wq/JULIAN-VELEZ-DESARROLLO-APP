@@ -646,11 +646,19 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     const monthKey = `${selectedYear}_${selectedMonth}`;
     try {
       if (skipListener) setSkipFirestoreListener(true);
+
+      // Optimistic update: update local state immediately
+      setCurrentMonthData(prev => ({
+        ...prev,
+        [doctorId]: shifts
+      }));
+
       await ensureAuth();
       await setDoc(doc(db, 'monthlyData', monthKey, 'doctors', String(doctorId)), shifts);
+
       if (skipListener) {
-        // Re-enable listener after a short delay to allow Firestore to process
-        setTimeout(() => setSkipFirestoreListener(false), 500);
+        // Re-enable listener after a longer delay to ensure Firestore processes
+        setTimeout(() => setSkipFirestoreListener(false), 2000);
       }
     } catch (err) {
       if (skipListener) setSkipFirestoreListener(false);
