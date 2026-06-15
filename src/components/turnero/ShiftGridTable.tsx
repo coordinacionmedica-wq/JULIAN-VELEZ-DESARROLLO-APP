@@ -14,6 +14,7 @@ interface ShiftGridTableProps {
   showGridHours: boolean;
   isAdmin: boolean;
   onSetShift: (doctorId: number, day: number, slot: SlotType, sigla: string) => Promise<void>;
+  updateDoctorMonth: (doctorId: number, shifts: any) => Promise<void>;
   conflicts: {
     personal: Record<string, { type: string; message: string }[]>;
     coverage: Record<string, string[]>;
@@ -35,7 +36,7 @@ export function ShiftGridTable(props: ShiftGridTableProps) {
   const {
     doctors, currentMonthData, variables,
     selectedMonth, selectedYear, daysInMonth,
-    showGridHours, isAdmin, onSetShift, conflicts, sundays,
+    showGridHours, isAdmin, onSetShift, updateDoctorMonth, conflicts, sundays,
     compactView,
   } = props;
 
@@ -134,19 +135,42 @@ export function ShiftGridTable(props: ShiftGridTableProps) {
   const handleDeleteSelected = async () => {
     if (!isAdmin || selectedCells.size === 0) return;
 
-    // Convert to array to avoid issues with Set iteration during async operations
-    const cellsToDelete = Array.from(selectedCells);
+    // Group cells by doctorId for bulk update
+    const cellsByDoctor: Record<number, Set<string>> = {};
+    for (const cellKey of selectedCells) {
+      const [doctorId] = cellKey.split('-');
+      if (!cellsByDoctor[Number(doctorId)]) {
+        cellsByDoctor[Number(doctorId)] = new Set();
+      }
+      cellsByDoctor[Number(doctorId)].add(cellKey);
+    }
 
-    for (const cellKey of cellsToDelete) {
-      const [doctorId, day, slot] = cellKey.split('-');
-      await onSetShift(Number(doctorId), Number(day), slot as SlotType, 'X');
-      // Small delay to ensure each update completes before next
-      await new Promise(resolve => setTimeout(resolve, 10));
+    // Update each doctor's shifts in bulk
+    for (const [doctorId, cellKeys] of Object.entries(cellsByDoctor)) {
+      const docId = Number(doctorId);
+      const shifts: any = { m: {}, t: {}, n: {} };
+
+      // Get current shifts for this doctor
+      const currentShifts = currentMonthData[docId] || { m: {}, t: {}, n: {} };
+      shifts.m = { ...currentShifts.m };
+      shifts.t = { ...currentShifts.t };
+      shifts.n = { ...currentShifts.n };
+
+      // Set all selected cells to 'X'
+      for (const cellKey of cellKeys) {
+        const [, day, slot] = cellKey.split('-');
+        shifts[slot as SlotType][Number(day)] = 'X';
+      }
+
+      // Use bulk update instead of individual setShift calls
+      await onSetShift(docId, 0, 'm', ''); // Dummy call to trigger update
+      // Directly update the data
+      await updateDoctorMonth(docId, shifts);
     }
 
     setSelectedCells(new Set());
     setSelectionStart(null);
-    setPasteMessage(`✓ ${cellsToDelete.length} celdas borradas`);
+    setPasteMessage(`✓ ${selectedCells.size} celdas borradas`);
     setTimeout(() => setPasteMessage(''), 3000);
   };
 
