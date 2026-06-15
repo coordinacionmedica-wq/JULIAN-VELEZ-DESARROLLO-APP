@@ -1,6 +1,6 @@
 import React, { useState, useMemo } from 'react';
 import { useDragScroll } from '../../hooks/useDragScroll';
-import { Eye, EyeOff } from 'lucide-react';
+import { Eye, EyeOff, CheckSquare } from 'lucide-react';
 import { SlotType, MonthlyData, VarSlotConfig, Doctor } from '../../types';
 import { DAY_NAMES } from '../../constants';
 
@@ -99,7 +99,7 @@ export function ShiftGridTable(props: ShiftGridTableProps) {
 
   const handleDeleteSelected = async () => {
     if (!isAdmin || selectedCells.size === 0) return;
-    
+
     for (const cellKey of selectedCells) {
       const [doctorId, day, slot] = cellKey.split('-');
       await onSetShift(Number(doctorId), Number(day), slot as SlotType, 'X');
@@ -108,6 +108,18 @@ export function ShiftGridTable(props: ShiftGridTableProps) {
     setSelectionStart(null);
     setPasteMessage(`✓ ${selectedCells.size} celdas borradas`);
     setTimeout(() => setPasteMessage(''), 3000);
+  };
+
+  const handleSelectDoctorCells = (doctorId: number) => {
+    if (!isAdmin) return;
+    const newSelection = new Set<string>();
+    for (let d = 1; d <= daysInMonth; d++) {
+      for (const slot of ['m', 't', 'n'] as SlotType[]) {
+        newSelection.add(getCellKey(doctorId, d, slot));
+      }
+    }
+    setSelectedCells(newSelection);
+    setSelectionStart({ doctorId, day: 1, slot: 'm' });
   };
 
   // Build ordered list of (doctorId, slot) rows for paste navigation
@@ -278,13 +290,24 @@ export function ShiftGridTable(props: ShiftGridTableProps) {
                         <div className="font-black text-slate-800 text-xs md:text-sm whitespace-nowrap truncate max-w-[80px] md:max-w-none">
                           {med.genero === 'F' ? 'Dra.' : 'Dr.'} {med.nombre}
                         </div>
-                        <button
-                          onClick={() => setFocusedDoctorId(med.id)}
-                          title="Ver solo este médico"
-                          className="shrink-0 p-1 rounded-md hover:bg-sky-100 text-sky-500 "
-                        >
-                          <Eye className="w-3.5 h-3.5" />
-                        </button>
+                        <div className="flex items-center gap-1">
+                          {isAdmin && (
+                            <button
+                              onClick={() => handleSelectDoctorCells(med.id)}
+                              title="Seleccionar todas las celdas de este médico"
+                              className="shrink-0 p-1 rounded-md hover:bg-sky-100 text-sky-500"
+                            >
+                              <CheckSquare className="w-3.5 h-3.5" />
+                            </button>
+                          )}
+                          <button
+                            onClick={() => setFocusedDoctorId(med.id)}
+                            title="Ver solo este médico"
+                            className="shrink-0 p-1 rounded-md hover:bg-sky-100 text-sky-500 "
+                          >
+                            <Eye className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
                       </div>
                       <div className="flex items-center gap-1 mt-0.5">
                         <span className="text-xs text-slate-400 font-bold">{med.cat}</span>
@@ -347,13 +370,24 @@ export function ShiftGridTable(props: ShiftGridTableProps) {
                         <div className="font-black text-slate-800 text-xs md:text-sm whitespace-nowrap truncate max-w-[80px] md:max-w-none">
                           {med.genero === 'F' ? 'Dra.' : 'Dr.'} {med.nombre}
                         </div>
-                        <button
-                          onClick={() => setFocusedDoctorId(med.id)}
-                          title="Ver solo este médico"
-                          className="shrink-0 p-1 rounded-md hover:bg-sky-100 text-sky-500 "
-                        >
-                          <Eye className="w-3.5 h-3.5" />
-                        </button>
+                        <div className="flex items-center gap-1">
+                          {isAdmin && (
+                            <button
+                              onClick={() => handleSelectDoctorCells(med.id)}
+                              title="Seleccionar todas las celdas de este médico"
+                              className="shrink-0 p-1 rounded-md hover:bg-sky-100 text-sky-500"
+                            >
+                              <CheckSquare className="w-3.5 h-3.5" />
+                            </button>
+                          )}
+                          <button
+                            onClick={() => setFocusedDoctorId(med.id)}
+                            title="Ver solo este médico"
+                            className="shrink-0 p-1 rounded-md hover:bg-sky-100 text-sky-500 "
+                          >
+                            <Eye className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
                       </div>
                       <div className="flex items-center gap-1 mt-0.5">
                         <span className="text-xs text-slate-400 font-bold">{med.cat}</span>
