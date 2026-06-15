@@ -97,7 +97,8 @@ import {
   updateDoc,
   serverTimestamp,
   orderBy,
-  limit
+  limit,
+  getDoc
 } from 'firebase/firestore';
 import { 
   auth, 
@@ -174,10 +175,14 @@ export default function App() {
   const [showRoleSelector, setShowRoleSelector] = useState(false);
   const [showCatSelector, setShowCatSelector] = useState(false);
   const [showGridHours, setShowGridHours] = useState(false);
+  const [editingCell, setEditingCell] = useState<{ id: number, d: number, slot: SlotType, val: string } | null>(null);
 
   // Data States
   const [doctors, setDoctors] = useState<Doctor[]>([]);
   const [variables, setVariables] = useState<VarSlotConfig>(DEFAULT_VARS);
+  const [customLegends, setCustomLegends] = useState<{role: string, legend: string}[]>([]);
+  const [newLegendRole, setNewLegendRole] = useState('');
+  const [newLegendContent, setNewLegendContent] = useState('');
   const [currentMonthData, setCurrentMonthData] = useState<MonthlyData>({});
 
   const getVarHours = (slot: SlotType, sigla: string): number => {
@@ -596,7 +601,7 @@ export default function App() {
     });
 
     // Global Settings (Variables)
-    const unsubVars = onSnapshot(doc(db, 'settings', 'variables'), (snap) => {
+    const unsubVars = onSnapshot(doc(db, 'settings', 'variables'), async (snap) => {
       let data: VarSlotConfig = { m: {}, t: {}, n: {} };
       if (snap.exists() && Object.keys(snap.data() || {}).length > 0) {
         const cloudData = snap.data() as VarSlotConfig;
@@ -612,6 +617,11 @@ export default function App() {
         if (!data[slot]) data[slot] = {};
       });
       setVariables(data);
+      
+      const legSnap = await getDoc(doc(db, 'settings', 'legends'));
+      if (legSnap.exists() && legSnap.data().list) {
+        setCustomLegends(legSnap.data().list);
+      }
     }, (err) => handleFirestoreError(err, OperationType.GET, 'settings/variables'));
 
     // Theme
@@ -992,7 +1002,13 @@ export default function App() {
             let jornada = String(rawRow[1] || '').trim().toLowerCase();
             
             if (medName) {
-              const found = doctors.find(d => d.nombre.toLowerCase().trim() === medName.toLowerCase());
+              const cleanNameTokens = medName.toLowerCase().replace(/dr\.?|dra\.?|medico|médico/g, '').trim().normalize("NFD").replace(/[\u0300-\u036f]/g, "").split(/\x20+/);
+              const found = doctors.find(d => {
+                 const dName = d.nombre.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+                 const dNameTokens = dName.split(/\x20+/);
+                 return cleanNameTokens.filter(t => t.length > 2).every(t => dNameTokens.includes(t)) || 
+                        dName === cleanNameTokens.join(' ') || dName.includes(cleanNameTokens.join(' ')) || cleanNameTokens.join(' ').includes(dName);
+              });
               if (found) {
                   lastDoctorId = found.id.toString();
               } else {
@@ -1817,7 +1833,6 @@ Donde doctorId es el ID numérico del médico y las llaves de los días son del 
   };
 
   const removeVariable = async (slot: SlotType, code: string) => {
-    if (code === 'X') return alert("Esta sigla es reservada del sistema.");
     if (!confirm(`¿Eliminar la sigla ${code}?`)) return;
     
     const updated = { ...variables };
@@ -1832,6 +1847,31 @@ Donde doctorId es el ID numérico del médico y las llaves de los días son del 
       await setDoc(doc(db, 'settings', 'variables'), updated);
     } catch(err) {
       handleFirestoreError(err, OperationType.WRITE, `settings/variables`);
+    }
+  };
+
+  const addLegend = async () => {
+    if (!newLegendRole.trim() || !newLegendContent.trim()) return;
+    const newLegends = [...customLegends, { role: newLegendRole.trim(), legend: newLegendContent.trim() }];
+    setCustomLegends(newLegends);
+    setNewLegendRole('');
+    setNewLegendContent('');
+    try {
+      await setDoc(doc(db, 'settings', 'legends'), { list: newLegends });
+      setNotification({ message: "Leyenda agregada", type: 'success' });
+    } catch (err) {
+      handleFirestoreError(err, OperationType.WRITE, 'settings/legends');
+    }
+  };
+
+  const removeLegend = async (idx: number) => {
+    if (!confirm("Eliminar este panel de siglas?")) return;
+    const newLegends = customLegends.filter((_, i) => i !== idx);
+    setCustomLegends(newLegends);
+    try {
+      await setDoc(doc(db, 'settings', 'legends'), { list: newLegends });
+    } catch (err) {
+      handleFirestoreError(err, OperationType.WRITE, 'settings/legends');
     }
   };
 
@@ -2175,7 +2215,7 @@ Donde doctorId es el ID numérico del médico y las llaves de los días son del 
         };
         for (let d = 1; d <= daysInMonth; d++) {
           const val = currentMonthData[med.id]?.[slot]?.[d] || 'X';
-          rowData[d.toString()] = val.toUpperCase() !== 'X' ? (showGridHours ? (getVarHours(slot, val)) : val) : '';
+          rowData[d.toString()] = val.toUpperCase() !== 'X' ? (showGridHours ? `${val} (${getVarHours(slot, val)})` : val) : '';
         }
         
         // We will add the formula in the worksheet object directly after json_to_sheet
@@ -2240,7 +2280,7 @@ Donde doctorId es el ID numérico del médico y las llaves de los días son del 
         ];
         for (let d = 1; d <= daysInMonth; d++) {
           const val = currentMonthData[med.id]?.[slot]?.[d] || 'X';
-          row.push(val.toUpperCase() !== 'X' ? (showGridHours ? `${getVarHours(slot, val)}` : val) : '');
+          row.push(val.toUpperCase() !== 'X' ? (showGridHours ? `${val} (${getVarHours(slot, val)})` : val) : '');
         }
         row.push(sIdx === 0 ? `${medTotalMonth}h` : '');
         tableRows.push(row);
@@ -2314,32 +2354,44 @@ Donde doctorId es el ID numérico del médico y las llaves de los días son del 
 
   // -- Cycle Logic --
   const setDocShift = async (doctorId: number, day: number, slot: SlotType, sigla: string) => {
-    // If we have selected cells and the target cell is among them, clear all selected cells
     const cellKey = `${doctorId}-${slot}-${day}`;
-    const newData = JSON.parse(JSON.stringify(currentMonthData)); // deep clone
-    let changed = false;
+    let affected = [{ docId: doctorId, s: slot, d: day }];
 
     if (selectedCells.has(cellKey)) {
-      for (const key of selectedCells) {
-        const [dIdStr, sSlot, dDayStr] = key.split('-');
-        const cDocId = Number(dIdStr);
-        const cSlot = sSlot as SlotType;
-        const cDay = Number(dDayStr);
-        
-        if (!newData[cDocId]) newData[cDocId] = { m: {}, t: {}, n: {} };
-        newData[cDocId][cSlot][cDay] = sigla;
-        changed = true;
-      }
-    } else {
-      if (!newData[doctorId]) newData[doctorId] = { m: {}, t: {}, n: {} };
-      newData[doctorId][slot][day] = sigla;
-      changed = true;
+      affected = Array.from(selectedCells).map(k => {
+        const [dIdStr, sSlot, dDayStr] = k.split('-');
+        return { docId: Number(dIdStr), s: sSlot as SlotType, d: Number(dDayStr) };
+      });
+      setSelectedCells(new Set());
+      setSelectionStart(null);
     }
 
-    if (changed) {
-      setCurrentMonthData(newData);
-      await setDoc(doc(db, 'monthlyData', `${selectedYear}_${selectedMonth}`), { data: newData }, { merge: true });
-    }
+    setCurrentMonthData(prev => {
+      const cloned = { ...prev };
+      const docUpdates: Record<number, any> = {};
+
+      affected.forEach(({ docId, s, d }) => {
+        if (!cloned[docId]) {
+          cloned[docId] = { m: {}, t: {}, n: {} };
+        } else {
+          cloned[docId] = {
+            m: { ...cloned[docId].m },
+            t: { ...cloned[docId].t },
+            n: { ...cloned[docId].n }
+          };
+        }
+        cloned[docId][s][d] = sigla;
+        docUpdates[docId] = cloned[docId];
+      });
+
+      setTimeout(() => {
+        Object.entries(docUpdates).forEach(([dIdStr, updatedData]) => {
+          updateDoctorMonth(Number(dIdStr), updatedData);
+        });
+      }, 0);
+
+      return cloned;
+    });
   };
 
   const handleGridPaste = async (e: React.ClipboardEvent<HTMLTableDataCellElement>, startDocId: number, startSlot: SlotType, startDay: number) => {
@@ -2441,112 +2493,94 @@ Donde doctorId es el ID numérico del médico y las llaves de los días son del 
     }
 
     if (changed) {
-        setCurrentMonthData(newData);
+        updateMonthlyData(newData);
         setNotification({ message: 'Datos pegados con éxito', type: 'success' });
-        try {
-            await setDoc(doc(db, 'monthlyData', `${selectedYear}_${selectedMonth}`), { data: newData }, { merge: true });
-        } catch(err) {
-            handleFirestoreError(err, OperationType.WRITE, 'monthlyData');
-        }
     }
   };
 
   const cycleShift = async (doctorId: number, day: number, slot: SlotType) => {
     if (session?.r !== 'admin') return;
 
-    // Use specific doctor data to prevent global overwrite collision
-    const docShifts = currentMonthData[doctorId] ? { 
-      m: { ...currentMonthData[doctorId].m }, 
-      t: { ...currentMonthData[doctorId].t }, 
-      n: { ...currentMonthData[doctorId].n } 
-    } : { m: {}, t: {}, n: {} };
-    
-    // Cycle through available variables for that slot
-    const slotVars = ['X', ...Object.keys(variables[slot])];
-    const currentSigla = String(docShifts[slot][day] || 'X').trim();
-    
-    // Case-insensitive matching to fix stuck variables like "Compensa" vs "COMPENSA"
-    const lowerVars = slotVars.map(s => String(s).toLowerCase());
-    const lowerCurrent = currentSigla.toLowerCase();
-    
-    let currentIdx = lowerVars.indexOf(lowerCurrent);
-    if (currentIdx === -1) {
-      // If the current variable doesn't exist in the list (even casing ignored), try mapping it to X first
-      // so it can at least be cycled out. If it was already X, we start from 0 anyway.
-      currentIdx = 0; 
-    }
-    
-    const nextIdx = (currentIdx + 1) % slotVars.length;
-    const nextSigla = slotVars[nextIdx];
-
-    const oldSigla = docShifts[slot][day] || 'X';
-    docShifts[slot][day] = nextSigla;
-    
-    if (nextSigla === 'CAP') {
-      const docData = doctors.find(d => d.id === doctorId);
-      if (docData) {
-        await pushNotification(doctorId, `CAPACITACIÓN: Día ${day}. Credenciales: ${docData.username}/${docData.password}.`);
-      }
-    }
-
-    const m = docShifts.m[day] || 'X';
-    const t = docShifts.t[day] || 'X';
-    const n = docShifts.n[day] || 'X';
-    const activeOnDay = [m, t, n].filter(v => v !== 'X' && v !== 'PT');
-    
-    if (nextSigla !== 'X' && nextSigla !== 'PT') {
-      if (activeOnDay.length > 1) {
-        setNotification({ message: `Nota: El médico ya tiene turno este día (${activeOnDay.join(', ')}).`, type: 'info' });
-      }
-    }
-
-    const docData = doctors.find(d => d.id === doctorId);
-    
-    // Novelty logic: only active if month is published OR if we are in days 29, 30, 31 of any month
-    const today = new Date();
-    const currentDay = today.getDate();
-    const isLateInMonth = currentDay >= 29;
-    
-    // If the month is already published, any change is a novelty.
-    // If NOT published, it's only a novelty if it's the 29th, 30th or 31st.
-    const isNovedad = isMonthPublished || isLateInMonth;
-
-    try {
-      if (isNovedad) {
-        const logId = Date.now();
-        const newLog: AuditEntry = {
-          id: logId,
-          timestamp: Date.now(),
-          targetMonth: selectedMonth,
-          targetYear: selectedYear,
-          doctorId,
-          doctorName: docData?.nombre || 'Desconocido',
-          doctorContact: (docData?.telefono || docData?.email) ?? '',
-          day,
-          slot,
-          oldSigla,
-          newSigla: nextSigla,
-          adminName: session?.n || 'Admin'
-        };
-        await setDoc(doc(db, 'auditLogs', logId.toString()), newLog);
-      }
+    setCurrentMonthData(prev => {
+      const docShifts = prev[doctorId] ? { 
+        m: { ...prev[doctorId].m }, 
+        t: { ...prev[doctorId].t }, 
+        n: { ...prev[doctorId].n } 
+      } : { m: {}, t: {}, n: {} };
       
-      // Automation
-      if (slot === 'n' && nextSigla !== 'X' && nextSigla !== 'PT') {
-        const lastDay = new Date(selectedYear, selectedMonth + 1, 0).getDate();
-        if (day < lastDay) {
-          docShifts.m[day + 1] = 'PT';
-        }
-      }
+      const slotVars = ['X', ...Object.keys(variables[slot])];
+      const currentSigla = String(docShifts[slot][day] || 'X').trim();
+      
+      const lowerVars = slotVars.map(s => String(s).toLowerCase());
+      const lowerCurrent = currentSigla.toLowerCase();
+      
+      let currentIdx = lowerVars.indexOf(lowerCurrent);
+      if (currentIdx === -1) currentIdx = 0; 
+      
+      const nextIdx = (currentIdx + 1) % slotVars.length;
+      const nextSigla = slotVars[nextIdx];
+      const oldSigla = docShifts[slot][day] || 'X';
+      
+      docShifts[slot][day] = nextSigla;
+      
+      const today = new Date();
+      const isLateInMonth = today.getDate() >= 29;
+      const isNovedad = isMonthPublished || isLateInMonth;
 
-      await updateDoctorMonth(doctorId, docShifts);
-      if (new Date().getDate() === 1) {
-        setNotification({ message: `Turno ${nextSigla} guardado`, type: 'success' });
-      }
-    } catch(err: any) {
-      // Error is likely already handled and reported by updateDoctorMonth or pushNotification
-      console.error("CycleShift operation failed:", err);
-    }
+      setTimeout(async () => {
+        if (nextSigla === 'CAP') {
+          const docData = doctors.find(d => d.id === doctorId);
+          if (docData) {
+            await pushNotification(doctorId, `CAPACITACIÓN: Día ${day}. Credenciales: ${docData.username}/${docData.password}.`);
+          }
+        }
+
+        const activeOnDay = [docShifts.m[day] || 'X', docShifts.t[day] || 'X', docShifts.n[day] || 'X'].filter(v => v !== 'X' && v !== 'PT');
+        if (nextSigla !== 'X' && nextSigla !== 'PT') {
+          if (activeOnDay.length > 1) {
+            setNotification({ message: `Nota: El médico ya tiene turno este día (${activeOnDay.join(', ')}).`, type: 'info' });
+          }
+        }
+
+        try {
+          if (isNovedad) {
+            const docData = doctors.find(d => d.id === doctorId);
+            const logId = Date.now();
+            const newLog: AuditEntry = {
+              id: logId,
+              timestamp: Date.now(),
+              targetMonth: selectedMonth,
+              targetYear: selectedYear,
+              doctorId,
+              doctorName: docData?.nombre || 'Desconocido',
+              doctorContact: (docData?.telefono || docData?.email) ?? '',
+              day,
+              slot,
+              oldSigla,
+              newSigla: nextSigla,
+              adminName: session?.n || 'Admin'
+            };
+            await setDoc(doc(db, 'auditLogs', logId.toString()), newLog);
+          }
+          
+          if (slot === 'n' && nextSigla !== 'X' && nextSigla !== 'PT') {
+            const lastDay = new Date(selectedYear, selectedMonth + 1, 0).getDate();
+            if (day < lastDay) {
+              docShifts.m[day + 1] = 'PT';
+            }
+          }
+
+          await updateDoctorMonth(doctorId, docShifts);
+          if (new Date().getDate() === 1) {
+            setNotification({ message: `Turno ${nextSigla} guardado`, type: 'success' });
+          }
+        } catch(err: any) {
+          console.error("CycleShift operation failed:", err);
+        }
+      }, 0);
+
+      return { ...prev, [doctorId]: docShifts };
+    });
   };
 
   const handleCallAvailability = async () => {
@@ -4133,7 +4167,7 @@ Usa un tono directivo, formal y conciso en español. Solo usa negritas y viñeta
               )}
 
               {/* Selectors */}
-              <div className="flex flex-wrap gap-4 items-center bg-white p-4 rounded-2xl border border-slate-200 no-print shadow-sm">
+              <div className="flex flex-wrap gap-4 items-center bg-white p-4 rounded-2xl border border-slate-200 no-print shadow-sm sticky top-0 z-[60]">
                 <div className="flex-1 min-w-[200px]">
                    <label className="text-[10px] uppercase text-sky-600 ml-2 mb-1 block font-bold">Período de Nómina</label>
                    <div className="flex gap-2">
@@ -4389,32 +4423,32 @@ Usa un tono directivo, formal y conciso en español. Solo usa negritas y viñeta
                    <span>Días del Mes →</span>
                 </div>
                 
-                <div className="overflow-x-auto border border-slate-200 rounded-[18px] bg-white shadow-xl overflow-y-hidden custom-scrollbar">
+                <div className="overflow-auto border border-slate-200 rounded-[18px] bg-white shadow-xl max-h-[calc(100vh-250px)] custom-scrollbar">
                   <table 
-                    className="w-full text-[10px] text-center border-collapse"
+                    className="w-full text-[10px] text-center border-collapse relative"
                   >
-                    <thead>
-                      <tr className="bg-slate-50">
-                        <th className="sticky left-0 bg-slate-50 z-30 min-w-[120px] md:min-w-[160px] text-left px-3 md:px-4 py-4 text-sky-700 border-r-2 border-sky-500 border-b border-slate-200 shadow-[2px_0_5px_rgba(0,0,0,0.05)]">
+                    <thead className="sticky top-0 z-40 bg-slate-50 shadow-[0_2px_5px_rgba(0,0,0,0.05)]">
+                      <tr>
+                        <th className="sticky left-0 top-0 bg-slate-50 z-50 min-w-[100px] md:min-w-[140px] text-left px-2 md:px-4 py-4 text-sky-700 border-r-2 border-sky-500 border-b border-slate-200 shadow-[2px_0_5px_rgba(0,0,0,0.05)]">
                           TALENTO HUMANO
                         </th>
-                      <th className="w-8 border border-slate-200 text-slate-400 font-black border-b">J.</th>
+                      <th className="w-8 border border-slate-200 text-slate-400 font-black border-b sticky top-0 bg-slate-50 z-40">J.</th>
                       {Array.from({ length: daysInMonth }, (_, i) => {
                         const day = i + 1;
                         const dow = new Date(selectedYear, selectedMonth, day).getDay();
                         return (
-                          <th key={day} className={`px-2 py-2 border border-slate-200 border-b ${dow === 0 ? 'border-r-2 border-r-sky-500' : ''}`}>
+                          <th key={day} className={`px-2 py-2 border border-slate-200 border-b sticky top-0 bg-slate-50 z-40 ${dow === 0 ? 'border-r-2 border-r-sky-500' : ''}`}>
                             <div className="text-slate-800 text-[11px] font-bold">{day}</div>
                             <div className="text-[8px] text-emerald-600 uppercase font-bold">{DAY_NAMES[dow]}</div>
                           </th>
                         );
                       })}
                       {sundays.map((_, i) => (
-                        <th key={i} className="min-w-[40px] px-2 bg-slate-100 border border-slate-200 border-b text-[8px] text-sky-600 font-bold">
+                        <th key={i} className="min-w-[40px] px-2 bg-slate-100 border border-slate-200 border-b text-[8px] text-sky-600 font-bold sticky top-0 z-40">
                           S{i + 1}
                         </th>
                       ))}
-                      <th className="sticky right-0 z-30 bg-sky-500 text-white font-black px-4 min-w-[60px] border-b border-slate-200 shadow-[-2px_0_5px_rgba(0,0,0,0.1)]">TOTAL</th>
+                      <th className="sticky right-0 top-0 z-50 bg-sky-500 text-white font-black px-4 min-w-[60px] border-b border-slate-200 shadow-[-2px_0_5px_rgba(0,0,0,0.1)]">TOTAL</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -4462,11 +4496,11 @@ Usa un tono directivo, formal y conciso en español. Solo usa negritas y viñeta
                       return (['m', 't', 'n'] as SlotType[]).map((slot, sIdx) => (
                         <tr key={`${med.id}-${slot}`} className={`group hover:bg-slate-50 transition-colors ${sIdx === 2 ? 'border-b-4 border-slate-200' : ''}`}>
                           {sIdx === 0 && (
-                            <td rowSpan={3} className="sticky left-0 bg-white z-20 text-left px-4 border-r-2 border-sky-500 border-b border-slate-200 shadow-xl group-hover:bg-slate-50">
-                              <div className="font-bold text-slate-800 text-xs whitespace-nowrap">{displayName}</div>
+                            <td rowSpan={3} className="sticky left-0 bg-white z-20 text-left px-2 md:px-4 border-r-2 border-sky-500 border-b border-slate-200 shadow-xl group-hover:bg-slate-50 max-w-[100px] md:max-w-none">
+                              <div className="font-bold text-slate-800 text-[9px] md:text-xs truncate" title={displayName}>{displayName}</div>
                             </td>
                           )}
-                          <td className="sticky left-[120px] md:left-[160px] z-20 slot-label bg-slate-50 text-slate-400 font-black text-[8px] py-2 border-r border-slate-200 uppercase shadow-[2px_0_5px_rgba(0,0,0,0.02)]">
+                          <td className="sticky left-[100px] md:left-[140px] z-20 slot-label bg-slate-50 text-slate-400 font-black text-[8px] py-2 border-r border-slate-200 uppercase shadow-[2px_0_5px_rgba(0,0,0,0.02)]">
                             {slot === 'm' ? 'Mañana' : slot === 't' ? 'Tarde' : 'Noche'}
                           </td>
                           {Array.from({ length: daysInMonth }, (_, i) => {
@@ -4478,14 +4512,21 @@ Usa un tono directivo, formal y conciso en español. Solo usa negritas y viñeta
                             
                             const cellConflicts = conflicts.personal[`${med.id}-${d}-${slot}`] || [];
                             const hasConflict = cellConflicts.length > 0;
+                            const isSelected = selectedCells.has(`${med.id}-${slot}-${d}`);
+                            const isEditing = editingCell?.id === med.id && editingCell?.d === d && editingCell?.slot === slot;
                             
                             return (
                               <td 
                                 key={d}
                                 tabIndex={0}
                                 data-ref={`${med.id}-${slot}-${d}`}
+                                onDoubleClick={() => {
+                                  if (!isAdminUser) return;
+                                  setEditingCell({ id: med.id, d, slot, val: val === 'X' ? '' : val });
+                                }}
                                 onClick={(e) => {
                                   if (!isAdminUser) return;
+                                  if (isEditing) return;
                                   const cellKey = `${med.id}-${slot}-${d}`;
                                   
                                   if (e.shiftKey && selectionStart) {
@@ -4540,12 +4581,20 @@ Usa un tono directivo, formal y conciso en español. Solo usa negritas y viñeta
                                   if (cell) cell.focus();
                                 }}
                                 onKeyDown={(e) => {
-                                  if (!isAdminUser) return;
+                                  if (!isAdminUser || isEditing) return;
                                   // Backspace or Delete to clear
                                   if (e.key === 'Backspace' || e.key === 'Delete') {
-                                    setDocShift(med.id, d, slot, 'X');
-                                  } else if (e.key.length === 1 && e.key.match(/[a-zA-Z0-9-]/)) {
-                                    // Start typing a sigla directly? That is hard without inline edit. 
+                                    if (selectedCells.size > 0) {
+                                      selectedCells.forEach(cellKey => {
+                                        const [docId, s, day] = cellKey.split('-');
+                                        setDocShift(parseInt(docId), parseInt(day), s as SlotType, 'X');
+                                      });
+                                    } else {
+                                      setDocShift(med.id, d, slot, 'X');
+                                    }
+                                  } else if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
+                                    e.preventDefault();
+                                    setEditingCell({ id: med.id, d, slot, val: e.key });
                                   }
                                 }}
                                 onPaste={(e) => {
@@ -4554,15 +4603,45 @@ Usa un tono directivo, formal y conciso en español. Solo usa negritas y viñeta
                                 }}
                                 title={cellConflicts.map(c => c.message).join('\n')}
                                 className={`
-                                  border border-slate-200 py-2 cursor-pointer focus:outline-none focus:ring-2 focus:ring-sky-500 focus:z-10
-                                  transition-all duration-150 relative
+                                  border border-slate-200 py-0 cursor-pointer focus:outline-none focus:ring-2 focus:ring-sky-500 focus:z-10
+                                  transition-all duration-150 relative h-full min-h-[30px]
                                   ${dow === 0 ? 'border-r-2 border-r-sky-500' : ''}
-                                  ${!isShift ? 'opacity-10 text-slate-400 scale-90' : 'scale-100'}
-                                  ${isPT ? 'text-amber-600 font-black' : 'text-slate-800 font-medium'}
-                                  ${hasConflict ? 'bg-rose-50 text-rose-600' : ''}
+                                  ${isSelected ? 'bg-sky-100 ring-2 ring-sky-500 ring-inset z-10' :
+                                    hasConflict ? 'bg-rose-50 border-rose-200 text-rose-600' :
+                                    isPT ? 'bg-stone-100 text-amber-600 font-black' :
+                                    isShift ? 'bg-slate-50 text-slate-800' : 'bg-white hover:bg-slate-50 opacity-50 scale-90 text-slate-400'
+                                  }
                                 `}
                               >
-                                {isShift ? (showGridHours ? `${getVarHours(slot, val)}` : val) : ''}
+                                {isEditing ? (
+                                  <input 
+                                    autoFocus
+                                    className="w-full h-full min-h-[30px] max-w-[40px] text-center text-[10px] outline-none focus:ring-0 bg-yellow-50 z-50 text-slate-800"
+                                    value={editingCell.val}
+                                    onChange={e => setEditingCell({ ...editingCell, val: e.target.value })}
+                                    onBlur={() => {
+                                       setDocShift(med.id, d, slot, editingCell.val || 'X');
+                                       setEditingCell(null);
+                                    }}
+                                    onKeyDown={e => {
+                                       if (e.key === 'Enter') {
+                                         setDocShift(med.id, d, slot, editingCell.val || 'X');
+                                         setEditingCell(null);
+                                         setTimeout(() => {
+                                          const cell = document.querySelector(`[data-ref="${med.id}-${slot}-${d}"]`) as HTMLElement;
+                                          if (cell) cell.focus();
+                                         }, 50);
+                                       }
+                                       if (e.key === 'Escape') setEditingCell(null);
+                                    }}
+                                  />
+                                ) : (
+                                  <>
+                                    <span className={`block w-full h-full min-h-[16px] text-[10px] tracking-tight flex items-center justify-center ${isPT || hasConflict || isShift ? 'font-black' : 'font-medium'} ${hasConflict ? 'text-rose-600' : ''}`}>
+                                      {val !== 'X' ? (showGridHours ? `${val} (${getVarHours(slot, val)})` : val) : ''}
+                                    </span>
+                                  </>
+                                )}
                               </td>
                             );
                           })}
@@ -4597,8 +4676,19 @@ Usa un tono directivo, formal y conciso en español. Solo usa negritas y viñeta
                  <div className="flex items-center gap-1"><span className="w-2 h-2 bg-[#4ade80] rounded-full"></span> Baja Carga (&lt;42h)</div>
                  <div className="flex items-center gap-1"><span className="w-2 h-2 bg-[#16a34a] rounded-full"></span> Meta Ideal (42h-66h)</div>
                  <div className="flex items-center gap-1"><span className="w-2 h-2 bg-[#ff7d33] rounded-full"></span> Sobrecarga (&gt;66h)</div>
-                 <div className="flex items-center gap-1 ml-auto text-amber-400"><span className="w-2 h-2 bg-amber-400 rounded-full"></span> PT: Post-Turno Automático</div>
               </div>
+              
+              {/* Custom Legends Display */}
+              {customLegends.length > 0 && (
+                <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
+                  {customLegends.map((leg, idx) => (
+                    <div key={idx} className="bg-slate-50 border border-slate-100 p-4 rounded-2xl print:border-none print:bg-white print:p-0">
+                      <h4 className="font-black text-slate-800 text-xs uppercase mb-1">{leg.role}</h4>
+                      <p className="font-mono text-[9px] text-slate-500 whitespace-pre-wrap">{leg.legend}</p>
+                    </div>
+                  ))}
+                </div>
+              )}
             </motion.div>
           )}
 
@@ -5384,6 +5474,7 @@ Usa un tono directivo, formal y conciso en español. Solo usa negritas y viñeta
                 selectedYear={selectedYear}
                 isAdmin={session?.r === 'admin'}
                 onReorderDoctors={handleReorderDoctors}
+                onDeleteDoctor={deleteDoctor}
                 onUpdateDoctorStatus={async (id, st) => {
                   if(!confirm(`¿Desea cambiar el estado a ${st.toUpperCase()}?`)) return;
                   try {
@@ -5552,6 +5643,55 @@ Usa un tono directivo, formal y conciso en español. Solo usa negritas y viñeta
                         </div>
                       </div>
                     ))}
+                 </div>
+              </div>
+
+              {/* Paneles de Leyendas (Por Rol) */}
+              <div className="mt-8 bg-white rounded-[32px] p-8 border border-emerald-100 shadow-xl">
+                 <h3 className="text-xl font-bold text-emerald-700 flex items-center gap-2 mb-6">
+                    <FileText className="w-6 h-6" /> Paneles de Siglas (Leyendas por Rol)
+                 </h3>
+                 <p className="text-sm text-slate-500 mb-6 font-medium">Cree descripciones personalizadas de siglas para diferentes roles (Ej: Enfermería, Especialistas) que se mostrarán en la malla.</p>
+                 <div className="flex flex-col sm:flex-row gap-4 p-4 bg-emerald-50 rounded-2xl mb-8 border border-emerald-100 items-start">
+                    <input 
+                      className="w-full sm:w-[200px] bg-white border border-emerald-100 p-4 rounded-xl outline-none focus:border-emerald-500 font-bold" 
+                      placeholder="Rol (Ej: Enfermería)"
+                      value={newLegendRole}
+                      onChange={(e) => setNewLegendRole(e.target.value)}
+                    />
+                    <textarea 
+                      className="w-full sm:flex-1 bg-white border border-emerald-100 p-4 rounded-xl outline-none focus:border-emerald-500 text-sm resize-none" 
+                      placeholder="Descripción. Ej: M (6h), N (12h)..." 
+                      rows={2}
+                      value={newLegendContent}
+                      onChange={(e) => setNewLegendContent(e.target.value)}
+                    />
+                    <button 
+                      onClick={addLegend}
+                      className="w-full sm:w-auto bg-emerald-600 text-white font-black px-6 py-4 rounded-xl hover:scale-105 active:scale-95 transition-transform"
+                    >
+                      AÑADIR
+                    </button>
+                 </div>
+                 
+                 <div className="space-y-4">
+                    {customLegends.map((leg, idx) => (
+                      <div key={idx} className="bg-stone-50 p-4 rounded-xl border border-emerald-100 flex flex-col sm:flex-row sm:justify-between items-start sm:items-center group gap-4">
+                        <div>
+                          <p className="text-sm font-black text-emerald-800 uppercase">{leg.role}</p>
+                          <p className="text-xs text-slate-500 font-mono mt-1">{leg.legend}</p>
+                        </div>
+                        <button 
+                          onClick={() => removeLegend(idx)}
+                          className="opacity-100 sm:opacity-0 sm:group-hover:opacity-100 p-2 text-rose-400 hover:bg-rose-100 hover:text-rose-600 rounded-lg transition-all"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </div>
+                    ))}
+                    {customLegends.length === 0 && (
+                      <div className="text-center py-6 text-slate-400 italic text-sm border-dashed border-2 border-emerald-100 rounded-xl">No hay paneles personalizados para otros roles.</div>
+                    )}
                  </div>
               </div>
             </motion.div>

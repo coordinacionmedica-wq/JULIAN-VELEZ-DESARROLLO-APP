@@ -16,13 +16,14 @@ interface Props {
   onEditDoctor: (doctor: Doctor) => void;
   onResetPassword: (id: number) => void;
   onAddDoctorClick: () => void;
+  onDeleteDoctor?: (id: number) => void;
   onUpdateDoctorPermissions?: (id: number, permissions: string[]) => void;
   onImportDoctors?: (doctors: any[]) => void;
   onAssignFreeDays?: () => void;
   onReorderDoctors?: (sourceId: number, targetId: number) => void;
 }
 
-export function HumanResourcesView({ doctors, currentMonthData, variables, selectedMonth, selectedYear, isAdmin, onUpdateDoctorStatus, onEditDoctor, onResetPassword, onAddDoctorClick, onUpdateDoctorPermissions, onImportDoctors, onAssignFreeDays, onReorderDoctors }: Props) {
+export function HumanResourcesView({ doctors, currentMonthData, variables, selectedMonth, selectedYear, isAdmin, onUpdateDoctorStatus, onEditDoctor, onResetPassword, onAddDoctorClick, onDeleteDoctor, onUpdateDoctorPermissions, onImportDoctors, onAssignFreeDays, onReorderDoctors }: Props) {
   
   const [cedulaSearch, setCedulaSearch] = useState('');
   const [categoryFilter, setCategoryFilter] = useState<string>('all');
@@ -390,6 +391,15 @@ export function HumanResourcesView({ doctors, currentMonthData, variables, selec
                         >
                           <Shield className="w-4 h-4" />
                         </button>
+                        {onDeleteDoctor && (
+                          <button
+                            onClick={() => onDeleteDoctor(doc.id)}
+                            className="p-1.5 text-slate-400 hover:bg-rose-100 hover:text-rose-700 rounded-lg transition-colors border border-transparent hover:border-rose-300"
+                            title="Eliminar médico por completo"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        )}
                       </div>
                     </td>
                   )}
