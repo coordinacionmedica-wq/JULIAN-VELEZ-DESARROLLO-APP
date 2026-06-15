@@ -331,19 +331,28 @@ export const AdminToolbox: React.FC<AdminToolboxProps> = ({
           onNotify("Talento Humano actualizado correctamente", 'success');
         } else if (type === 'siglas') {
           onNotify("Actualizando configuración de siglas...", 'info');
-          // This one is trickier as it updates the 'settings/variables' document
-          const newVars: VarSlotConfig = { m: {}, t: {}, n: {} };
+          // Get existing variables to merge with imported ones
+          const existingVarsDoc = await getDoc(doc(db, 'settings', 'variables'));
+          const existingVars = existingVarsDoc.exists() ? existingVarsDoc.data() as VarSlotConfig : { m: {}, t: {}, n: {} };
+          
+          // Merge existing with new imported siglas (new ones override existing)
+          const mergedVars: VarSlotConfig = {
+            m: { ...existingVars.m },
+            t: { ...existingVars.t },
+            n: { ...existingVars.n }
+          };
+          
           for (const row of data as any[]) {
-            const sigla = row.Sigla || row.sigla;
+            const sigla = String(row.Sigla || row.sigla || '').trim().toUpperCase(); // Normalize to uppercase
             const jornadaRaw = String(row.Jornada_m_t_n || row.jornada || row.Jornada || 'm').toLowerCase();
             const jornada = (jornadaRaw.includes('m') ? 'm' : jornadaRaw.includes('t') ? 't' : jornadaRaw.includes('n') ? 'n' : 'm') as SlotType;
             const horas = Number(row.Horas_Carga || row.horas || 6);
-            if (sigla && newVars[jornada]) {
-              newVars[jornada][sigla] = horas;
+            if (sigla && mergedVars[jornada]) {
+              mergedVars[jornada][sigla] = horas;
             }
           }
-          await setDoc(doc(db, 'settings', 'variables'), newVars);
-          onNotify("Configuración de siglas actualizada", 'success');
+          await setDoc(doc(db, 'settings', 'variables'), mergedVars);
+          onNotify("Configuración de siglas actualizada (merge con existentes)", 'success');
         } else if (type === 'shifts') {
           const monthKey = `${selectedYear}_${selectedMonth}`;
           onNotify(`Importando turnos para el mes ${selectedMonth + 1}/${selectedYear}...`, 'info');

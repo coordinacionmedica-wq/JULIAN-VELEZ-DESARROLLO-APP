@@ -38,6 +38,7 @@ export function useShiftActions() {
       : { m: {}, t: {}, n: {} };
     const oldSigla = docShifts[slot][day] || 'X';
     if (oldSigla === sigla) return;
+    // Store in canonical uppercase form
     docShifts[slot][day] = sigla;
     if (sigla === 'CAP') {
       const docData = doctors.find(d => d.id === doctorId);
