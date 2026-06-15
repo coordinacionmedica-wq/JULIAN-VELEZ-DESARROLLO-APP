@@ -201,7 +201,6 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [evaluations, setEvaluations] = useState<Record<string, any>>({});
   const [registrationRequests, setRegistrationRequests] = useState<RegistrationRequest[]>([]);
   const [isMonthPublished, setIsMonthPublished] = useState(false);
-  const [skipFirestoreListener, setSkipFirestoreListener] = useState(false);
 
   // AI
   const [isGeneratingAI, setIsGeneratingAI] = useState(false);
@@ -449,9 +448,6 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     const unsubDocs = onSnapshot(
       collection(db, 'monthlyData', monthKey, 'doctors'),
       (snap) => {
-        // Skip listener updates during bulk operations to avoid conflicts
-        if (skipFirestoreListener) return;
-
         const data: MonthlyData = {};
         snap.docs.forEach(d => {
           data[Number(d.id)] = d.data() as DoctorShifts;
@@ -642,26 +638,12 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     try { await signInAnonymously(auth); } catch { /* ignore */ }
   }, []);
 
-  const updateDoctorMonth = useCallback(async (doctorId: number, shifts: DoctorShifts, skipListener = false) => {
+  const updateDoctorMonth = useCallback(async (doctorId: number, shifts: DoctorShifts) => {
     const monthKey = `${selectedYear}_${selectedMonth}`;
     try {
-      if (skipListener) setSkipFirestoreListener(true);
-
-      // Optimistic update: update local state immediately
-      setCurrentMonthData(prev => ({
-        ...prev,
-        [doctorId]: shifts
-      }));
-
       await ensureAuth();
       await setDoc(doc(db, 'monthlyData', monthKey, 'doctors', String(doctorId)), shifts);
-
-      if (skipListener) {
-        // Re-enable listener after a longer delay to ensure Firestore processes
-        setTimeout(() => setSkipFirestoreListener(false), 2000);
-      }
     } catch (err) {
-      if (skipListener) setSkipFirestoreListener(false);
       handleFirestoreError(err, OperationType.WRITE, `monthlyData/${monthKey}/doctors/${doctorId}`);
     }
   }, [selectedMonth, selectedYear, ensureAuth]);

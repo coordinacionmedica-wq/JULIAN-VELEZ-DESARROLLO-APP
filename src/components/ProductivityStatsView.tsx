@@ -35,8 +35,15 @@ export function ProductivityStatsView({ doctors, currentMonthData, variables, se
         const slotData = currentMonthData[doc.id]?.[slot];
         if (slotData) {
           Object.entries(slotData).forEach(([day, sigla]) => {
-            if (sigla && sigla !== 'X' && sigla !== 'DESC' && sigla !== 'PT') {
-              const h = variables[slot][sigla] || 0;
+            if (sigla && sigla.toUpperCase() !== 'X' && sigla.toUpperCase() !== 'DESC' && sigla.toUpperCase() !== 'PT') {
+              const h = (() => {
+                const slotVars = variables[slot] || {};
+                if (slotVars[sigla] !== undefined) return slotVars[sigla];
+                const upperSigla = sigla.toUpperCase();
+                const foundKey = Object.keys(slotVars).find(k => k.toUpperCase() === upperSigla);
+                if (foundKey) return slotVars[foundKey];
+                return 0;
+              })();
               const d = parseInt(day);
 
               // Service stats
@@ -86,7 +93,7 @@ export function ProductivityStatsView({ doctors, currentMonthData, variables, se
             <Clock className="w-8 h-8" />
           </div>
           <div>
-            <p className="text-xs uppercase font-black text-slate-400 tracking-widest">Horas Totales</p>
+            <p className="text-[10px] uppercase font-black text-slate-400 tracking-widest">Horas Totales</p>
             <p className="text-3xl font-black text-slate-800">{stats.totalHours.toLocaleString()}h</p>
             <p className="text-xs text-slate-500">Ejecutadas en {monthName}</p>
           </div>
@@ -97,7 +104,7 @@ export function ProductivityStatsView({ doctors, currentMonthData, variables, se
             <Activity className="w-8 h-8" />
           </div>
           <div>
-            <p className="text-xs uppercase font-black text-slate-400 tracking-widest">Promedio Diario</p>
+            <p className="text-[10px] uppercase font-black text-slate-400 tracking-widest">Promedio Diario</p>
             <p className="text-3xl font-black text-slate-800">{(stats.totalHours / daysInMonth).toFixed(1)}h</p>
             <p className="text-xs text-slate-500">Horas por día</p>
           </div>
@@ -108,7 +115,7 @@ export function ProductivityStatsView({ doctors, currentMonthData, variables, se
             <Users className="w-8 h-8" />
           </div>
           <div>
-            <p className="text-xs uppercase font-black text-slate-400 tracking-widest">Productividad Media</p>
+            <p className="text-[10px] uppercase font-black text-slate-400 tracking-widest">Productividad Media</p>
             <p className="text-3xl font-black text-slate-800">{(stats.totalHours / doctors.filter(d => d.st === 'activo').length).toFixed(1)}h</p>
             <p className="text-xs text-slate-500">Por médico activo</p>
           </div>

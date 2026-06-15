@@ -37,8 +37,7 @@ export function useShiftActions() {
       ? { m: { ...currentMonthData[doctorId].m }, t: { ...currentMonthData[doctorId].t }, n: { ...currentMonthData[doctorId].n } }
       : { m: {}, t: {}, n: {} };
     const oldSigla = docShifts[slot][day] || 'X';
-    // Allow update even if same sigla (needed for bulk operations)
-    // Store in canonical uppercase form
+    if (oldSigla === sigla) return;
     docShifts[slot][day] = sigla;
     if (sigla === 'CAP') {
       const docData = doctors.find(d => d.id === doctorId);

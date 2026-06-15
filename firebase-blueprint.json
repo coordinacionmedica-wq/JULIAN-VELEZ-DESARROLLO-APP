@@ -13,8 +13,7 @@
         "contacto": { "type": "string" },
         "username": { "type": "string" },
         "password": { "type": "string" },
-        "passwordLastChanged": { "type": "number" },
-        "sortOrder": { "type": "number" }
+        "passwordLastChanged": { "type": "number" }
       },
       "required": ["id", "nombre", "cat", "rol", "st", "username", "password"]
     },
@@ -143,12 +142,59 @@
         "timestamp": { "type": "number" }
       },
       "required": ["id", "month", "year", "activityName", "day", "place", "modality", "hours", "targetGroup", "responsible", "targetPopulation", "status", "timestamp"]
+    },
+    "CensusPatient": {
+      "title": "Census Patient",
+      "description": "A patient currently in the hospital census",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "section": { "enum": ["OBSERVACION URGENCIAS", "HOSPITALIZACION", "URGENCIAS/PARTOS/CIRUGIA"] },
+        "bed": { "type": "string" },
+        "entryDate": { "type": "string" },
+        "name": { "type": "string" },
+        "age": { "type": "string" },
+        "eps": { "type": "string" },
+        "diagnoses": { "type": "string" },
+        "managementPlan": { "type": "string" },
+        "paraclinicals": { "type": "string" },
+        "pendientes": { "type": "string" },
+        "isHighlight": { "type": "boolean" },
+        "specialty": { "type": "string" },
+        "updatedAt": { "type": "number" },
+        "updatedBy": { "type": "string" }
+      },
+      "required": ["id", "section", "bed", "name"]
+    },
+    "HandoverEvent": {
+      "title": "Handover Event",
+      "description": "Record of a shift handover",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "timestamp": { "type": "number" },
+        "doctorFromId": { "type": "number" },
+        "doctorFromName": { "type": "string" },
+        "shift": { "enum": ["m", "t", "n"] },
+        "section": { "type": "string" },
+        "patientCount": { "type": "number" },
+        "notes": { "type": "string" }
+      },
+      "required": ["id", "timestamp", "doctorFromId", "shift"]
     }
   },
   "firestore": {
     "doctors": {
       "schema": "Doctor",
       "description": "Collection of all medical staff"
+    },
+    "census": {
+      "schema": "CensusPatient",
+      "description": "Active hospital census patients"
+    },
+    "handovers": {
+      "schema": "HandoverEvent",
+      "description": "History of shift handovers and metrics"
     },
     "auditLogs": {
       "schema": "AuditLog",

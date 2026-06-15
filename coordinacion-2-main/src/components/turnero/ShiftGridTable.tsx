@@ -1,6 +1,6 @@
 import React, { useState, useMemo } from 'react';
 import { useDragScroll } from '../../hooks/useDragScroll';
-import { Eye, EyeOff, CheckSquare } from 'lucide-react';
+import { Eye, EyeOff } from 'lucide-react';
 import { SlotType, MonthlyData, VarSlotConfig, Doctor } from '../../types';
 import { DAY_NAMES } from '../../constants';
 
@@ -14,7 +14,6 @@ interface ShiftGridTableProps {
   showGridHours: boolean;
   isAdmin: boolean;
   onSetShift: (doctorId: number, day: number, slot: SlotType, sigla: string) => Promise<void>;
-  updateDoctorMonth: (doctorId: number, shifts: any, skipListener?: boolean) => Promise<void>;
   conflicts: {
     personal: Record<string, { type: string; message: string }[]>;
     coverage: Record<string, string[]>;
@@ -36,7 +35,7 @@ export function ShiftGridTable(props: ShiftGridTableProps) {
   const {
     doctors, currentMonthData, variables,
     selectedMonth, selectedYear, daysInMonth,
-    showGridHours, isAdmin, onSetShift, updateDoctorMonth, conflicts, sundays,
+    showGridHours, isAdmin, onSetShift, conflicts, sundays,
     compactView,
   } = props;
 
@@ -47,8 +46,6 @@ export function ShiftGridTable(props: ShiftGridTableProps) {
   const [selectedCells, setSelectedCells] = useState<Set<string>>(new Set());
   const [isSelecting, setIsSelecting] = useState(false);
   const [selectionStart, setSelectionStart] = useState<{ doctorId: number; day: number; slot: SlotType } | null>(null);
-  const [selectionEnd, setSelectionEnd] = useState<{ doctorId: number; day: number; slot: SlotType } | null>(null);
-  const [isDragging, setIsDragging] = useState(false);
 
   const handleSetShift = async (doctorId: number, day: number, slot: SlotType, value: string) => {
     await onSetShift(doctorId, day, slot, value);
@@ -60,7 +57,7 @@ export function ShiftGridTable(props: ShiftGridTableProps) {
 
   const handleCellClick = (doctorId: number, day: number, slot: SlotType, e: React.MouseEvent) => {
     if (!isAdmin) return;
-
+    
     if (e.shiftKey && selectionStart) {
       // Range selection
       const newSelection = new Set<string>();
@@ -70,7 +67,7 @@ export function ShiftGridTable(props: ShiftGridTableProps) {
       const maxIdx = Math.max(startIdx, endIdx);
       const minDay = Math.min(selectionStart.day, day);
       const maxDay = Math.max(selectionStart.day, day);
-
+      
       for (let i = minIdx; i <= maxIdx; i++) {
         const { doctorId: dId, slot: s } = rowOrder[i];
         for (let d = minDay; d <= maxDay; d++) {
@@ -78,7 +75,6 @@ export function ShiftGridTable(props: ShiftGridTableProps) {
         }
       }
       setSelectedCells(newSelection);
-      setSelectionEnd({ doctorId, day, slot });
     } else if (e.ctrlKey || e.metaKey) {
       // Toggle single cell selection
       const key = getCellKey(doctorId, day, slot);
@@ -90,245 +86,28 @@ export function ShiftGridTable(props: ShiftGridTableProps) {
       }
       setSelectedCells(newSelection);
       setSelectionStart({ doctorId, day, slot });
-      setSelectionEnd({ doctorId, day, slot });
     } else {
       // Normal click - start editing or clear selection
       if (selectedCells.size > 0) {
         setSelectedCells(new Set());
         setSelectionStart(null);
-        setSelectionEnd(null);
       }
       setEditingCell({ doctorId, day, slot });
       setEditingValue((currentMonthData[doctorId]?.[slot]?.[day] || 'X') === 'X' ? '' : currentMonthData[doctorId]?.[slot]?.[day] || '');
     }
   };
 
-  const handleCellMouseDown = (doctorId: number, day: number, slot: SlotType, e: React.MouseEvent) => {
-    if (!isAdmin || e.button !== 0) return; // Only left click
-    e.preventDefault();
-    setIsDragging(true);
-    setSelectionStart({ doctorId, day, slot });
-    setSelectedCells(new Set([getCellKey(doctorId, day, slot)]));
-  };
-
-  const handleCellMouseEnter = (doctorId: number, day: number, slot: SlotType, e: React.MouseEvent) => {
-    if (!isAdmin || !isDragging || !selectionStart) return;
-
-    // Calculate range from selectionStart to current cell
-    const newSelection = new Set<string>();
-    const startIdx = rowOrder.findIndex(r => r.doctorId === selectionStart.doctorId && r.slot === selectionStart.slot);
-    const endIdx = rowOrder.findIndex(r => r.doctorId === doctorId && r.slot === slot);
-    const minIdx = Math.min(startIdx, endIdx);
-    const maxIdx = Math.max(startIdx, endIdx);
-    const minDay = Math.min(selectionStart.day, day);
-    const maxDay = Math.max(selectionStart.day, day);
-
-    for (let i = minIdx; i <= maxIdx; i++) {
-      const { doctorId: dId, slot: s } = rowOrder[i];
-      for (let d = minDay; d <= maxDay; d++) {
-        newSelection.add(getCellKey(dId, d, s));
-      }
-    }
-    setSelectedCells(newSelection);
-  };
-
-  const handleMouseUp = () => {
-    setIsDragging(false);
-  };
-
   const handleDeleteSelected = async () => {
     if (!isAdmin || selectedCells.size === 0) return;
-
-    // Group cells by doctorId for bulk update
-    const cellsByDoctor: Record<number, Set<string>> = {};
+    
     for (const cellKey of selectedCells) {
-      const [doctorId] = cellKey.split('-');
-      if (!cellsByDoctor[Number(doctorId)]) {
-        cellsByDoctor[Number(doctorId)] = new Set();
-      }
-      cellsByDoctor[Number(doctorId)].add(cellKey);
+      const [doctorId, day, slot] = cellKey.split('-');
+      await onSetShift(Number(doctorId), Number(day), slot as SlotType, 'X');
     }
-
-    // Update each doctor's shifts in bulk
-    for (const [doctorId, cellKeys] of Object.entries(cellsByDoctor)) {
-      const docId = Number(doctorId);
-      const shifts: any = { m: {}, t: {}, n: {} };
-
-      // Get current shifts for this doctor
-      const currentShifts = currentMonthData[docId] || { m: {}, t: {}, n: {} };
-      shifts.m = { ...currentShifts.m };
-      shifts.t = { ...currentShifts.t };
-      shifts.n = { ...currentShifts.n };
-
-      // Set all selected cells to 'X'
-      for (const cellKey of cellKeys) {
-        const [, day, slot] = cellKey.split('-');
-        shifts[slot as SlotType][Number(day)] = 'X';
-      }
-
-      // Use bulk update instead of individual setShift calls
-      await onSetShift(docId, 0, 'm', ''); // Dummy call to trigger update
-      // Directly update the data with skipListener to avoid Firestore conflicts
-      await updateDoctorMonth(docId, shifts, true);
-    }
-
     setSelectedCells(new Set());
     setSelectionStart(null);
     setPasteMessage(`✓ ${selectedCells.size} celdas borradas`);
     setTimeout(() => setPasteMessage(''), 3000);
-  };
-
-  const handleSelectDoctorCells = (doctorId: number) => {
-    if (!isAdmin) return;
-    const newSelection = new Set<string>();
-    for (let d = 1; d <= daysInMonth; d++) {
-      for (const slot of ['m', 't', 'n'] as SlotType[]) {
-        newSelection.add(getCellKey(doctorId, d, slot));
-      }
-    }
-    setSelectedCells(newSelection);
-    setSelectionStart({ doctorId, day: 1, slot: 'm' });
-    setSelectionEnd({ doctorId, day: daysInMonth, slot: 'n' });
-  };
-
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (!isAdmin) return;
-
-    // Ctrl+A: Select all cells of first visible doctor or current editing doctor
-    if ((e.ctrlKey || e.metaKey) && e.key === 'a') {
-      e.preventDefault();
-      const doctorId = editingCell?.doctorId || doctors[0]?.id;
-      if (doctorId) handleSelectDoctorCells(doctorId);
-      return;
-    }
-
-    // Simple arrow keys: Navigate between cells (when editing)
-    if (editingCell && !e.ctrlKey && !e.shiftKey) {
-      const { doctorId, day, slot } = editingCell;
-      let newDay = day;
-      let newSlot = slot;
-      let newDoctorId = doctorId;
-
-      if (e.key === 'ArrowRight') {
-        newDay = Math.min(day + 1, daysInMonth);
-      } else if (e.key === 'ArrowLeft') {
-        newDay = Math.max(day - 1, 1);
-      } else if (e.key === 'ArrowDown') {
-        const slotOrder: SlotType[] = ['m', 't', 'n'];
-        const currentIdx = slotOrder.indexOf(slot);
-        if (currentIdx < slotOrder.length - 1) {
-          newSlot = slotOrder[currentIdx + 1];
-        } else {
-          // Move to next doctor
-          const currentDoctorIdx = doctors.findIndex(d => d.id === doctorId);
-          if (currentDoctorIdx < doctors.length - 1) {
-            newDoctorId = doctors[currentDoctorIdx + 1].id;
-            newSlot = 'm';
-          }
-        }
-      } else if (e.key === 'ArrowUp') {
-        const slotOrder: SlotType[] = ['m', 't', 'n'];
-        const currentIdx = slotOrder.indexOf(slot);
-        if (currentIdx > 0) {
-          newSlot = slotOrder[currentIdx - 1];
-        } else {
-          // Move to previous doctor
-          const currentDoctorIdx = doctors.findIndex(d => d.id === doctorId);
-          if (currentDoctorIdx > 0) {
-            newDoctorId = doctors[currentDoctorIdx - 1].id;
-            newSlot = 'n';
-          }
-        }
-      } else {
-        return; // Not an arrow key
-      }
-
-      e.preventDefault();
-      setEditingCell({ doctorId: newDoctorId, day: newDay, slot: newSlot });
-      setEditingValue((currentMonthData[newDoctorId]?.[newSlot]?.[newDay] || 'X') === 'X' ? '' : currentMonthData[newDoctorId]?.[newSlot]?.[newDay] || '');
-      return;
-    }
-
-    // Ctrl+Shift+Arrow keys: Extend selection (works when editing or with selection)
-    if ((e.ctrlKey || e.metaKey) && e.shiftKey) {
-      e.preventDefault();
-
-      // If no selection start, use current editing cell as start
-      if (!selectionStart && editingCell) {
-        setSelectionStart({ doctorId: editingCell.doctorId, day: editingCell.day, slot: editingCell.slot });
-        setSelectionEnd({ doctorId: editingCell.doctorId, day: editingCell.day, slot: editingCell.slot });
-        setSelectedCells(new Set([getCellKey(editingCell.doctorId, editingCell.day, editingCell.slot)]));
-        return;
-      }
-
-      if (!selectionStart) return;
-
-      // Use selectionEnd as current position, or selectionStart if not set
-      const currentPos = selectionEnd || selectionStart;
-      let newDay = currentPos.day;
-      let newSlot = currentPos.slot;
-      let newDoctorId = currentPos.doctorId;
-
-      if (e.key === 'ArrowRight') {
-        newDay = Math.min(currentPos.day + 1, daysInMonth);
-      } else if (e.key === 'ArrowLeft') {
-        newDay = Math.max(currentPos.day - 1, 1);
-      } else if (e.key === 'ArrowDown') {
-        const slotOrder: SlotType[] = ['m', 't', 'n'];
-        const currentIdx = slotOrder.indexOf(currentPos.slot);
-        if (currentIdx < slotOrder.length - 1) {
-          newSlot = slotOrder[currentIdx + 1];
-        } else {
-          // Move to next doctor
-          const currentDoctorIdx = doctors.findIndex(d => d.id === currentPos.doctorId);
-          if (currentDoctorIdx < doctors.length - 1) {
-            newDoctorId = doctors[currentDoctorIdx + 1].id;
-            newSlot = 'm';
-          }
-        }
-      } else if (e.key === 'ArrowUp') {
-        const slotOrder: SlotType[] = ['m', 't', 'n'];
-        const currentIdx = slotOrder.indexOf(currentPos.slot);
-        if (currentIdx > 0) {
-          newSlot = slotOrder[currentIdx - 1];
-        } else {
-          // Move to previous doctor
-          const currentDoctorIdx = doctors.findIndex(d => d.id === currentPos.doctorId);
-          if (currentDoctorIdx > 0) {
-            newDoctorId = doctors[currentDoctorIdx - 1].id;
-            newSlot = 'n';
-          }
-        }
-      }
-
-      // Update selectionEnd
-      setSelectionEnd({ doctorId: newDoctorId, day: newDay, slot: newSlot });
-
-      // Extend selection from selectionStart to new position
-      const newSelection = new Set<string>();
-      const startIdx = rowOrder.findIndex(r => r.doctorId === selectionStart.doctorId && r.slot === selectionStart.slot);
-      const endIdx = rowOrder.findIndex(r => r.doctorId === newDoctorId && r.slot === newSlot);
-      const minIdx = Math.min(startIdx, endIdx);
-      const maxIdx = Math.max(startIdx, endIdx);
-      const minDay = Math.min(selectionStart.day, newDay);
-      const maxDay = Math.max(selectionStart.day, newDay);
-
-      for (let i = minIdx; i <= maxIdx; i++) {
-        const { doctorId: dId, slot: s } = rowOrder[i];
-        for (let d = minDay; d <= maxDay; d++) {
-          newSelection.add(getCellKey(dId, d, s));
-        }
-      }
-      setSelectedCells(newSelection);
-    }
-
-    // Escape: Clear selection
-    if (e.key === 'Escape' && selectedCells.size > 0) {
-      e.preventDefault();
-      setSelectedCells(new Set());
-      setSelectionStart(null);
-      setSelectionEnd(null);
-    }
   };
 
   // Build ordered list of (doctorId, slot) rows for paste navigation
@@ -345,15 +124,15 @@ export function ShiftGridTable(props: ShiftGridTableProps) {
   // Bulk paste handler: parses tab/newline-separated clipboard data from Excel
   const handleBulkPaste = async (e: React.ClipboardEvent) => {
     if (!isAdmin) return;
-
+    
     const text = e.clipboardData.getData('text/plain');
     if (!text) return;
 
     // If no editing cell, use first visible doctor/slot as starting point
-    const startRowIdx = editingCell
+    const startRowIdx = editingCell 
       ? rowOrder.findIndex(r => r.doctorId === editingCell.doctorId && r.slot === editingCell.slot)
       : 0;
-
+    
     const startDay = editingCell ? editingCell.day : 1;
 
     // Handle single cell paste (no tabs)
@@ -375,98 +154,41 @@ export function ShiftGridTable(props: ShiftGridTableProps) {
       return;
     }
 
-    // Handle multi-cell paste (with tabs) - use bulk updates to avoid Firestore conflicts
+    // Handle multi-cell paste (with tabs)
     e.preventDefault();
     const rows = text.split(/\r?\n/).filter(r => r.trim());
     if (rows.length === 0) return;
 
-    // Group updates by doctorId for bulk operations
-    const updatesByDoctor: Record<number, any> = {};
-
+    let cellCount = 0;
+    let errorCount = 0;
     for (let ri = 0; ri < rows.length; ri++) {
       const cells = rows[ri].split('\t');
       const currentRowIdx = startRowIdx + ri;
       if (currentRowIdx >= rowOrder.length) break;
       const { doctorId, slot } = rowOrder[currentRowIdx];
 
-      // Initialize shifts for this doctor if not exists
-      if (!updatesByDoctor[doctorId]) {
-        const currentShifts = currentMonthData[doctorId] || { m: {}, t: {}, n: {} };
-        updatesByDoctor[doctorId] = {
-          m: { ...currentShifts.m },
-          t: { ...currentShifts.t },
-          n: { ...currentShifts.n }
-        };
-      }
-
       for (let ci = 0; ci < cells.length; ci++) {
         const day = startDay + ci;
         if (day > daysInMonth) break;
         const value = cells[ci].trim() || 'X';
-        updatesByDoctor[doctorId][slot][day] = value;
+        try {
+          await onSetShift(doctorId, day, slot, value);
+          cellCount++;
+        } catch (err) {
+          errorCount++;
+        }
       }
-    }
-
-    // Apply bulk updates for each doctor
-    let cellCount = 0;
-    for (const [doctorId, shifts] of Object.entries(updatesByDoctor)) {
-      await updateDoctorMonth(Number(doctorId), shifts, true);
-      // Count total cells updated
-      cellCount += Object.values(shifts.m).length + Object.values(shifts.t).length + Object.values(shifts.n).length;
     }
 
     if (editingCell) setEditingCell(null);
-    setPasteMessage(`✓ ${cellCount} celdas pegadas`);
-    setTimeout(() => setPasteMessage(''), 3000);
-  };
-
-  // Copy handler: copies selected cells to clipboard in Excel-compatible format
-  const handleCopy = async (e: React.ClipboardEvent) => {
-    if (!isAdmin || selectedCells.size === 0) return;
-
-    e.preventDefault();
-
-    // Group cells by row (doctorId, slot) and sort by day
-    const cellsByRow: Record<string, Record<number, string>> = {};
-
-    for (const cellKey of selectedCells) {
-      const [doctorId, day, slot] = cellKey.split('-');
-      const rowKey = `${doctorId}-${slot}`;
-      if (!cellsByRow[rowKey]) {
-        cellsByRow[rowKey] = {};
-      }
-      cellsByRow[rowKey][Number(day)] = currentMonthData[Number(doctorId)]?.[slot as SlotType]?.[Number(day)] || 'X';
-    }
-
-    // Convert to tab/newline format (Excel-compatible)
-    const rows: string[] = [];
-    const sortedRowKeys = Object.keys(cellsByRow).sort((a, b) => {
-      const [aDocId, aSlot] = a.split('-');
-      const [bDocId, bSlot] = b.split('-');
-      const aIdx = rowOrder.findIndex(r => r.doctorId === Number(aDocId) && r.slot === aSlot);
-      const bIdx = rowOrder.findIndex(r => r.doctorId === Number(bDocId) && r.slot === bSlot);
-      return aIdx - bIdx;
-    });
-
-    for (const rowKey of sortedRowKeys) {
-      const cells = cellsByRow[rowKey];
-      const sortedDays = Object.keys(cells).map(Number).sort((a, b) => a - b);
-      const rowValues = sortedDays.map(day => {
-        const val = cells[day];
-        return val === 'X' ? '' : val;
-      });
-      rows.push(rowValues.join('\t'));
-    }
-
-    const clipboardText = rows.join('\n');
-    await navigator.clipboard.writeText(clipboardText);
-    setPasteMessage(`✓ ${selectedCells.size} celdas copiadas`);
+    const errorMsg = errorCount > 0 ? ` (${errorCount} con error)` : '';
+    setPasteMessage(`✓ ${cellCount} celdas pegadas${errorMsg}`);
     setTimeout(() => setPasteMessage(''), 3000);
   };
 
 
   return (
-    <div className="relative" onPaste={handleBulkPaste} onCopy={handleCopy}>
+    <div className="relative" onPaste={handleBulkPaste}>
       {/* Mobile hint + focus mode badge */}
       <div className="flex items-center justify-between px-2 pb-1">
         {focusedDoctorId !== null && (
@@ -502,10 +224,6 @@ export function ShiftGridTable(props: ShiftGridTableProps) {
         ref={useDragScroll<HTMLDivElement>()}
         className="overflow-auto border border-slate-200 rounded-xl md:rounded-[18px] bg-white shadow-xl max-h-[calc(100vh-280px)] custom-scrollbar -mx-1 md:mx-0"
         style={{ WebkitOverflowScrolling: 'touch' }}
-        tabIndex={0}
-        onKeyDown={handleKeyDown}
-        onMouseUp={handleMouseUp}
-        onMouseLeave={handleMouseUp}
       >
         <table className="w-full text-xs md:text-xs text-center border-collapse">
           <thead className="sticky top-0 z-40">
@@ -560,24 +278,13 @@ export function ShiftGridTable(props: ShiftGridTableProps) {
                         <div className="font-black text-slate-800 text-xs md:text-sm whitespace-nowrap truncate max-w-[80px] md:max-w-none">
                           {med.genero === 'F' ? 'Dra.' : 'Dr.'} {med.nombre}
                         </div>
-                        <div className="flex items-center gap-1">
-                          {isAdmin && (
-                            <button
-                              onClick={() => handleSelectDoctorCells(med.id)}
-                              title="Seleccionar todas las celdas de este médico"
-                              className="shrink-0 p-1 rounded-md hover:bg-sky-100 text-sky-500"
-                            >
-                              <CheckSquare className="w-3.5 h-3.5" />
-                            </button>
-                          )}
-                          <button
-                            onClick={() => setFocusedDoctorId(med.id)}
-                            title="Ver solo este médico"
-                            className="shrink-0 p-1 rounded-md hover:bg-sky-100 text-sky-500 "
-                          >
-                            <Eye className="w-3.5 h-3.5" />
-                          </button>
-                        </div>
+                        <button
+                          onClick={() => setFocusedDoctorId(med.id)}
+                          title="Ver solo este médico"
+                          className="shrink-0 p-1 rounded-md hover:bg-sky-100 text-sky-500 "
+                        >
+                          <Eye className="w-3.5 h-3.5" />
+                        </button>
                       </div>
                       <div className="flex items-center gap-1 mt-0.5">
                         <span className="text-xs text-slate-400 font-bold">{med.cat}</span>
@@ -597,33 +304,7 @@ export function ShiftGridTable(props: ShiftGridTableProps) {
                       const hasPT = [m, t, n].includes('PT');
                       const bg = activeCount === 0 ? '' : activeCount === 1 ? 'bg-emerald-100' : activeCount >= 2 ? 'bg-sky-200' : '';
                       return (
-                        <td
-                          key={d}
-                          onMouseDown={(e) => {
-                            // For compact view, select all 3 slots for this day
-                            if (!isAdmin || e.button !== 0) return;
-                            e.preventDefault();
-                            setIsDragging(true);
-                            setSelectionStart({ doctorId: med.id, day: d, slot: 'm' });
-                            const newSelection = new Set<string>();
-                            for (const slot of ['m', 't', 'n'] as SlotType[]) {
-                              newSelection.add(getCellKey(med.id, d, slot));
-                            }
-                            setSelectedCells(newSelection);
-                          }}
-                          onMouseEnter={(e) => {
-                            if (!isAdmin || !isDragging || !selectionStart) return;
-                            const newSelection = new Set<string>();
-                            const minDay = Math.min(selectionStart.day, d);
-                            const maxDay = Math.max(selectionStart.day, d);
-                            for (const slot of ['m', 't', 'n'] as SlotType[]) {
-                              for (let day = minDay; day <= maxDay; day++) {
-                                newSelection.add(getCellKey(med.id, day, slot));
-                              }
-                            }
-                            setSelectedCells(newSelection);
-                          }}
-                          className={`border border-slate-200 py-1 text-center text-[7px] md:text-xs font-bold cursor-pointer ${dow === 0 ? 'border-r-2 border-r-sky-500' : ''} ${bg} ${hasPT ? 'text-amber-500' : 'text-slate-600'}`}
+                        <td key={d} className={`border border-slate-200 py-1 text-center text-[7px] md:text-xs font-bold ${dow === 0 ? 'border-r-2 border-r-sky-500' : ''} ${bg} ${hasPT ? 'text-amber-500' : 'text-slate-600'}`}
                           title={`M:${m} T:${t} N:${n}`}
                         >
                           {activeCount > 0 ? activeCount : hasPT ? 'PT' : ''}
@@ -666,24 +347,13 @@ export function ShiftGridTable(props: ShiftGridTableProps) {
                         <div className="font-black text-slate-800 text-xs md:text-sm whitespace-nowrap truncate max-w-[80px] md:max-w-none">
                           {med.genero === 'F' ? 'Dra.' : 'Dr.'} {med.nombre}
                         </div>
-                        <div className="flex items-center gap-1">
-                          {isAdmin && (
-                            <button
-                              onClick={() => handleSelectDoctorCells(med.id)}
-                              title="Seleccionar todas las celdas de este médico"
-                              className="shrink-0 p-1 rounded-md hover:bg-sky-100 text-sky-500"
-                            >
-                              <CheckSquare className="w-3.5 h-3.5" />
-                            </button>
-                          )}
-                          <button
-                            onClick={() => setFocusedDoctorId(med.id)}
-                            title="Ver solo este médico"
-                            className="shrink-0 p-1 rounded-md hover:bg-sky-100 text-sky-500 "
-                          >
-                            <Eye className="w-3.5 h-3.5" />
-                          </button>
-                        </div>
+                        <button
+                          onClick={() => setFocusedDoctorId(med.id)}
+                          title="Ver solo este médico"
+                          className="shrink-0 p-1 rounded-md hover:bg-sky-100 text-sky-500 "
+                        >
+                          <Eye className="w-3.5 h-3.5" />
+                        </button>
                       </div>
                       <div className="flex items-center gap-1 mt-0.5">
                         <span className="text-xs text-slate-400 font-bold">{med.cat}</span>
@@ -712,8 +382,6 @@ export function ShiftGridTable(props: ShiftGridTableProps) {
                       <td
                         key={d}
                         onClick={(e) => handleCellClick(med.id, d, slot, e)}
-                        onMouseDown={(e) => handleCellMouseDown(med.id, d, slot, e)}
-                        onMouseEnter={(e) => handleCellMouseEnter(med.id, d, slot, e)}
                         title={cellConflicts.map(c => c.message).join('\n')}
                         className={`
                           border border-slate-200 py-0.5 md:py-1 cursor-pointer
@@ -733,7 +401,6 @@ export function ShiftGridTable(props: ShiftGridTableProps) {
                             value={editingValue}
                             onChange={e => setEditingValue(e.target.value)}
                             onKeyDown={e => {
-                              handleKeyDown(e);
                               if (e.key === 'Enter') { e.preventDefault(); handleSetShift(med.id, d, slot, editingValue || 'X'); }
                               if (e.key === 'Escape') { setEditingCell(null); }
                               if (e.key === 'Tab') { e.preventDefault(); handleSetShift(med.id, d, slot, editingValue || 'X'); }

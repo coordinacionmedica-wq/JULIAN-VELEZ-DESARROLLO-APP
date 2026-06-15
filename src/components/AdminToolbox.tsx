@@ -10,30 +10,12 @@ import {
   CheckCircle,
   Database,
   Users as UsersIcon,
-  Clock,
-  GripVertical
+  Clock
 } from 'lucide-react';
 import { AIEngineSettings, SlotType, VarSlotConfig, Doctor } from '../types';
 import * as XLSX from 'xlsx';
 import { doc, getDoc, setDoc } from 'firebase/firestore';
 import { db, handleFirestoreError, OperationType } from '../firebase';
-import {
-  DndContext,
-  closestCenter,
-  KeyboardSensor,
-  PointerSensor,
-  useSensor,
-  useSensors,
-  DragEndEvent,
-} from '@dnd-kit/core';
-import {
-  arrayMove,
-  SortableContext,
-  sortableKeyboardCoordinates,
-  useSortable,
-  verticalListSortingStrategy,
-} from '@dnd-kit/sortable';
-import { CSS } from '@dnd-kit/utilities';
 
 interface AdminToolboxProps {
   onNotify: (msg: string, type: 'success' | 'error' | 'info') => void;
@@ -43,44 +25,6 @@ interface AdminToolboxProps {
   isGenerating: boolean;
   selectedMonth: number;
   selectedYear: number;
-}
-
-interface SiglaItem {
-  id: string;
-  sigla: string;
-  horas: number;
-}
-
-// Sortable item component
-function SortableSigla({ id, sigla, horas, color }: { id: string; sigla: string; horas: number; color: string }) {
-  const {
-    attributes,
-    listeners,
-    setNodeRef,
-    transform,
-    transition,
-  } = useSortable({ id });
-
-  const style = {
-    transform: CSS.Transform.toString(transform),
-    transition,
-  };
-
-  return (
-    <div
-      ref={setNodeRef}
-      style={style}
-      className="flex justify-between items-center text-xs bg-white px-2 py-1 rounded border hover:shadow-md cursor-move"
-      {...attributes}
-      {...listeners}
-    >
-      <div className="flex items-center gap-2">
-        <GripVertical className="w-3 h-3 text-slate-400" />
-        <span className="font-bold text-slate-700">{sigla}</span>
-      </div>
-      <span className={`${color} font-black`}>{horas}h</span>
-    </div>
-  );
 }
 
 export const AdminToolbox: React.FC<AdminToolboxProps> = ({ 
@@ -104,85 +48,10 @@ export const AdminToolbox: React.FC<AdminToolboxProps> = ({
     customRules: ""
   });
 
+  const [driveFolderId, setDriveFolderId] = useState('');
+  const [isValidatingDrive, setIsValidatingDrive] = useState(false);
+
   const [isLoading, setIsLoading] = useState(true);
-
-  // Convert variables object to arrays for drag and drop
-  const [siglasState, setSiglasState] = useState<{
-    m: SiglaItem[];
-    t: SiglaItem[];
-    n: SiglaItem[];
-  }>({
-    m: Object.entries(variables.m || {}).map(([sigla, horas], idx) => ({ id: `m-${sigla}`, sigla, horas })),
-    t: Object.entries(variables.t || {}).map(([sigla, horas], idx) => ({ id: `t-${sigla}`, sigla, horas })),
-    n: Object.entries(variables.n || {}).map(([sigla, horas], idx) => ({ id: `n-${sigla}`, sigla, horas })),
-  });
-
-  // Update siglasState when variables change
-  useEffect(() => {
-    setSiglasState({
-      m: Object.entries(variables.m || {}).map(([sigla, horas]) => ({ id: `m-${sigla}`, sigla, horas })),
-      t: Object.entries(variables.t || {}).map(([sigla, horas]) => ({ id: `t-${sigla}`, sigla, horas })),
-      n: Object.entries(variables.n || {}).map(([sigla, horas]) => ({ id: `n-${sigla}`, sigla, horas })),
-    });
-  }, [variables]);
-
-  // Sensors for drag and drop
-  const sensors = useSensors(
-    useSensor(PointerSensor),
-    useSensor(KeyboardSensor, {
-      coordinateGetter: sortableKeyboardCoordinates,
-    })
-  );
-
-  // Handle drag end
-  const handleDragEnd = async (event: DragEndEvent) => {
-    const { active, over } = event;
-    
-    if (over && active.id !== over.id) {
-      // Determine source and destination slots
-      const activeId = active.id as string;
-      const overId = over.id as string;
-      
-      const activeSlot = activeId.charAt(0) as 'm' | 't' | 'n';
-      const overSlot = overId.charAt(0) as 'm' | 't' | 'n';
-      
-      const activeIndex = siglasState[activeSlot].findIndex(item => item.id === activeId);
-      const overIndex = siglasState[overSlot].findIndex(item => item.id === overId);
-      
-      if (activeIndex === -1 || overIndex === -1) return;
-      
-      const newSiglasState = { ...siglasState };
-      
-      if (activeSlot === overSlot) {
-        // Reorder within same slot
-        newSiglasState[activeSlot] = arrayMove(siglasState[activeSlot], activeIndex, overIndex);
-      } else {
-        // Move between slots
-        const [movedItem] = newSiglasState[activeSlot].splice(activeIndex, 1);
-        // Update the id to reflect new slot
-        movedItem.id = `${overSlot}-${movedItem.sigla}`;
-        newSiglasState[overSlot].splice(overIndex, 0, movedItem);
-      }
-      
-      setSiglasState(newSiglasState);
-      
-      // Save to Firestore
-      try {
-        const newVars: VarSlotConfig = { m: {}, t: {}, n: {} };
-        newSiglasState.m.forEach(item => { newVars.m[item.sigla] = item.horas; });
-        newSiglasState.t.forEach(item => { newVars.t[item.sigla] = item.horas; });
-        newSiglasState.n.forEach(item => { newVars.n[item.sigla] = item.horas; });
-        
-        await setDoc(doc(db, 'settings', 'variables'), newVars);
-        onNotify("Orden de siglas actualizado", 'success');
-      } catch (err) {
-        console.error("Error saving siglas order:", err);
-        onNotify("Error al guardar orden de siglas", 'error');
-        // Revert on error
-        setSiglasState(siglasState);
-      }
-    }
-  };
 
   useEffect(() => {
     const loadSettings = async () => {
@@ -190,6 +59,10 @@ export const AdminToolbox: React.FC<AdminToolboxProps> = ({
         const snap = await getDoc(doc(db, 'settings', 'aiEngineV3'));
         if (snap.exists()) {
           setAiSettings(snap.data() as AIEngineSettings);
+        }
+        const driveSnap = await getDoc(doc(db, 'settings', 'driveConfig'));
+        if (driveSnap.exists()) {
+          setDriveFolderId(driveSnap.data()?.folderId || '');
         }
       } catch (err) {
         console.error("Error loading AI settings:", err);
@@ -207,6 +80,38 @@ export const AdminToolbox: React.FC<AdminToolboxProps> = ({
     } catch (err) {
       handleFirestoreError(err, OperationType.WRITE, 'settings/aiEngineV3');
       onNotify("Error al guardar reglas", 'error');
+    }
+  };
+
+  const validateAndSaveDriveFolder = async () => {
+    if (!driveFolderId) {
+      onNotify("Debe ingresar un ID de carpeta", 'error');
+      return;
+    }
+    const token = localStorage.getItem('google_access_token');
+    if (!token) {
+      onNotify("Debe iniciar sesión con Google primero", 'error');
+      return;
+    }
+    setIsValidatingDrive(true);
+    try {
+      const res = await fetch(`https://www.googleapis.com/drive/v3/files/${driveFolderId}?supportsAllDrives=true`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (!res.ok) {
+        throw new Error("No se pudo acceder a la carpeta. Verifica el ID y los permisos.");
+      }
+      const fileData = await res.json();
+      if (fileData.mimeType !== 'application/vnd.google-apps.folder') {
+        throw new Error("El ID proporcionado no corresponde a una carpeta.");
+      }
+      await setDoc(doc(db, 'settings', 'driveConfig'), { folderId: driveFolderId });
+      onNotify("Carpeta validada y guardada correctamente", 'success');
+    } catch (err: any) {
+      console.error(err);
+      onNotify(err.message || "Error validando la carpeta", 'error');
+    } finally {
+      setIsValidatingDrive(false);
     }
   };
 
@@ -306,6 +211,11 @@ export const AdminToolbox: React.FC<AdminToolboxProps> = ({
         const ws = wb.Sheets[wsname];
         const data = XLSX.utils.sheet_to_json(ws, { defval: "" });
 
+        if (!data || data.length === 0) {
+          onNotify(`Error: El archivo de ${type === 'users' ? 'Talento Humano' : type === 'shifts' ? 'Turnos' : 'Siglas'} no tiene datos válidos.`, 'error');
+          return;
+        }
+
         if (type === 'users') {
           onNotify(`Iniciando importación de ${data.length} usuarios...`, 'info');
           for (const row of data as any[]) {
@@ -331,28 +241,38 @@ export const AdminToolbox: React.FC<AdminToolboxProps> = ({
           onNotify("Talento Humano actualizado correctamente", 'success');
         } else if (type === 'siglas') {
           onNotify("Actualizando configuración de siglas...", 'info');
-          // Get existing variables to merge with imported ones
-          const existingVarsDoc = await getDoc(doc(db, 'settings', 'variables'));
-          const existingVars = existingVarsDoc.exists() ? existingVarsDoc.data() as VarSlotConfig : { m: {}, t: {}, n: {} };
+          const newVars: VarSlotConfig = { m: { ...variables.m }, t: { ...variables.t }, n: { ...variables.n } };
           
-          // Merge existing with new imported siglas (new ones override existing)
-          const mergedVars: VarSlotConfig = {
-            m: { ...existingVars.m },
-            t: { ...existingVars.t },
-            n: { ...existingVars.n }
-          };
-          
-          for (const row of data as any[]) {
-            const sigla = String(row.Sigla || row.sigla || '').trim().toUpperCase(); // Normalize to uppercase
-            const jornadaRaw = String(row.Jornada_m_t_n || row.jornada || row.Jornada || 'm').toLowerCase();
-            const jornada = (jornadaRaw.includes('m') ? 'm' : jornadaRaw.includes('t') ? 't' : jornadaRaw.includes('n') ? 'n' : 'm') as SlotType;
-            const horas = Number(row.Horas_Carga || row.horas || 6);
-            if (sigla && mergedVars[jornada]) {
-              mergedVars[jornada][sigla] = horas;
+          let updatedCount = 0;
+          for (let sIdx = 0; sIdx < wb.SheetNames.length; sIdx++) {
+            const sName = wb.SheetNames[sIdx].toLowerCase();
+            const sheet = wb.Sheets[wb.SheetNames[sIdx]];
+            const sData = XLSX.utils.sheet_to_json(sheet, { defval: "" });
+
+            let defaultSlot: SlotType | null = null;
+            if (sName.includes('mañana') || sName.includes('manana') || sName.includes('mañ')) defaultSlot = 'm';
+            if (sName.includes('tarde') || sName.includes('tar')) defaultSlot = 't';
+            if (sName.includes('noche') || sName.includes('noc')) defaultSlot = 'n';
+
+            for (const row of sData as any[]) {
+              const sigla = String(row.Sigla || row.sigla || '').trim();
+              if (!sigla) continue;
+
+              const jornadaRaw = String(row.Jornada_m_t_n || row.jornada || row.Jornada || '').toLowerCase();
+              let jornada: SlotType;
+              if (jornadaRaw.includes('m') || jornadaRaw === 'm') jornada = 'm';
+              else if (jornadaRaw.includes('t') || jornadaRaw === 't') jornada = 't';
+              else if (jornadaRaw.includes('n') || jornadaRaw === 'n') jornada = 'n';
+              else if (defaultSlot) jornada = defaultSlot;
+              else jornada = 'm';
+
+              const horas = Number(row.Horas_Carga || row.horas || row.horas_carga || 6);
+              newVars[jornada][sigla] = horas;
+              updatedCount++;
             }
           }
-          await setDoc(doc(db, 'settings', 'variables'), mergedVars);
-          onNotify("Configuración de siglas actualizada (merge con existentes)", 'success');
+          await setDoc(doc(db, 'settings', 'variables'), newVars);
+          onNotify(`Configuración de siglas actualizada (${updatedCount} procesadas)`, 'success');
         } else if (type === 'shifts') {
           const monthKey = `${selectedYear}_${selectedMonth}`;
           onNotify(`Importando turnos para el mes ${selectedMonth + 1}/${selectedYear}...`, 'info');
@@ -403,81 +323,85 @@ export const AdminToolbox: React.FC<AdminToolboxProps> = ({
     e.target.value = '';
   };
 
-  if (isLoading) return <div className="p-4 text-center text-sm animate-pulse">Cargando...</div>;
+  if (isLoading) return <div className="p-8 text-center animate-pulse">Cargando Caja de Herramientas...</div>;
 
   return (
-    <div className="space-y-4 animate-in fade-in slide-in-from-bottom-4 duration-500">
+    <div className="space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
       {/* AI ENGINE V3 SETTINGS */}
-      <div className="bg-white rounded-2xl p-5 border border-emerald-100 shadow-sm relative overflow-hidden">
-        <div className="flex items-center gap-3 mb-4">
-          <div className="p-2.5 bg-emerald-50 rounded-xl text-emerald-600">
-             <BrainCircuit className="w-5 h-5" />
+      <div className="bg-white rounded-[32px] p-8 border border-emerald-100 shadow-xl relative overflow-hidden">
+        <div className="absolute top-0 right-0 p-8 opacity-5">
+          <BrainCircuit className="w-32 h-32 text-emerald-600" />
+        </div>
+        
+        <div className="flex items-center gap-4 mb-8">
+          <div className="p-4 bg-emerald-50 rounded-2xl text-emerald-600">
+             <BrainCircuit className="w-8 h-8" />
           </div>
           <div>
-            <h3 className="text-sm font-black text-slate-800">IA Shift Engine V3</h3>
-            <p className="text-xs text-emerald-600 font-bold uppercase tracking-widest">Configuración de Reglas Institucionales</p>
+            <h3 className="text-2xl font-black text-slate-800 tracking-tight">IA SHIFT ENGINE V3</h3>
+            <p className="text-[10px] text-emerald-600 font-bold uppercase tracking-widest">Configuración de Reglas Institucionales</p>
           </div>
         </div>
 
-        <div className="grid grid-cols-2 md:grid-cols-3 gap-3 mb-4">
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 mb-8">
            <div className="space-y-2">
-              <label className="text-xs font-black text-slate-400 uppercase ml-2 flex items-center gap-1">
+              <label className="text-[10px] font-black text-slate-400 uppercase ml-2 flex items-center gap-1">
                 <Clock className="w-3 h-3" /> Máx. Noches Consecutivas
               </label>
               <input 
                 type="number"
-                className="w-full bg-slate-50 border border-slate-100 px-3 py-2 rounded-lg font-bold text-sm outline-none focus:border-emerald-500 transition-all"
+                className="w-full bg-slate-50 border border-slate-100 p-4 rounded-xl font-bold outline-none focus:border-emerald-500 transition-all"
                 value={aiSettings.maxConsecutiveNights}
                 onChange={e => setAiSettings({...aiSettings, maxConsecutiveNights: Number(e.target.value)})}
               />
            </div>
            <div className="space-y-2">
-              <label className="text-xs font-black text-slate-400 uppercase ml-2 flex items-center gap-1">
+              <label className="text-[10px] font-black text-slate-400 uppercase ml-2 flex items-center gap-1">
                 <Clock className="w-3 h-3" /> Descanso Mínimo (Horas)
               </label>
               <input 
                 type="number"
-                className="w-full bg-slate-50 border border-slate-100 px-3 py-2 rounded-lg font-bold text-sm outline-none focus:border-emerald-500 transition-all"
+                className="w-full bg-slate-50 border border-slate-100 p-4 rounded-xl font-bold outline-none focus:border-emerald-500 transition-all"
                 value={aiSettings.minRestHoursBetweenShifts}
                 onChange={e => setAiSettings({...aiSettings, minRestHoursBetweenShifts: Number(e.target.value)})}
               />
            </div>
            <div className="space-y-2">
-              <label className="text-xs font-black text-slate-400 uppercase ml-2 flex items-center gap-1">
+              <label className="text-[10px] font-black text-slate-400 uppercase ml-2 flex items-center gap-1">
                 <Clock className="w-3 h-3" /> Máx. Turnos por Mes
               </label>
               <input 
                 type="number"
-                className="w-full bg-slate-50 border border-slate-100 px-3 py-2 rounded-lg font-bold text-sm outline-none focus:border-emerald-500 transition-all"
+                className="w-full bg-slate-50 border border-slate-100 p-4 rounded-xl font-bold outline-none focus:border-emerald-500 transition-all"
                 value={aiSettings.maxShiftsPerMonth}
                 onChange={e => setAiSettings({...aiSettings, maxShiftsPerMonth: Number(e.target.value)})}
               />
            </div>
            <div className="space-y-2">
-              <label className="text-xs font-black text-slate-400 uppercase ml-2 flex items-center gap-1">
+              <label className="text-[10px] font-black text-slate-400 uppercase ml-2 flex items-center gap-1">
                 <FileSpreadsheet className="w-3 h-3" /> Espaciado Fin de Semana (Semanas)
               </label>
               <input 
                 type="number"
-                className="w-full bg-slate-50 border border-slate-100 px-3 py-2 rounded-lg font-bold text-sm outline-none focus:border-emerald-500 transition-all"
+                className="w-full bg-slate-50 border border-slate-100 p-4 rounded-xl font-bold outline-none focus:border-emerald-500 transition-all"
                 value={aiSettings.weekendSpacingWeeks}
                 onChange={e => setAiSettings({...aiSettings, weekendSpacingWeeks: Number(e.target.value)})}
               />
            </div>
            <div className="space-y-2">
-              <label className="text-xs font-black text-slate-400 uppercase ml-2 flex items-center gap-1">
+              <label className="text-[10px] font-black text-slate-400 uppercase ml-2 flex items-center gap-1">
                 <CheckCircle className="w-3 h-3" /> Fines de Semana Libres / Mes
               </label>
               <input 
                 type="number"
-                className="w-full bg-slate-50 border border-slate-100 px-3 py-2 rounded-lg font-bold text-sm outline-none focus:border-emerald-500 transition-all"
+                className="w-full bg-slate-50 border border-slate-100 p-4 rounded-xl font-bold outline-none focus:border-emerald-500 transition-all"
                 value={aiSettings.mandatoryFreeWeekends}
                 onChange={e => setAiSettings({...aiSettings, mandatoryFreeWeekends: Number(e.target.value)})}
               />
            </div>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-4">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-8">
            {[
              { key: 'priorityRuralD1', label: 'Priorizar Rurales para Disponibilidad (D1/D2/D3)', icon: Sparkles },
              { key: 'blockTriplets', label: 'Bloquear Tripletes (No más de 3 turnos seguidos)', icon: Info },
@@ -494,138 +418,106 @@ export const AdminToolbox: React.FC<AdminToolboxProps> = ({
            ))}
         </div>
 
-        <div className="mb-4">
-           <label className="text-xs font-black text-slate-400 uppercase ml-2 mb-2 block">Reglas Personalizadas (Prompt Directo para IA)</label>
+        <div className="mb-8">
+           <label className="text-[10px] font-black text-slate-400 uppercase ml-2 mb-2 block">Reglas Personalizadas (Prompt Directo para IA)</label>
            <textarea 
-             className="w-full bg-slate-50 border border-slate-100 px-3 py-2 rounded-xl font-bold text-sm outline-none focus:border-emerald-500 transition-all min-h-[100px]"
+             className="w-full bg-slate-50 border border-slate-100 p-6 rounded-[24px] font-bold text-sm outline-none focus:border-emerald-500 transition-all min-h-[150px]"
              placeholder="Ej: El Dr. X no hace noches los jueves. Las vacaciones de la Dra. Y del 10 al 15..."
              value={aiSettings.customRules}
              onChange={e => setAiSettings({...aiSettings, customRules: e.target.value})}
            />
         </div>
 
-        <div className="flex flex-col sm:flex-row gap-2">
+        <div className="flex flex-col sm:flex-row gap-4">
           <button 
             onClick={saveSettings}
-            className="flex-1 bg-slate-800 text-white font-black py-2.5 rounded-xl hover:bg-slate-900 active:scale-95 transition-all text-xs flex items-center justify-center gap-2 shadow-sm"
+            className="flex-1 bg-slate-800 text-white font-black py-5 rounded-[24px] hover:bg-slate-900 active:scale-95 transition-all shadow-xl shadow-slate-900/10 uppercase tracking-widest text-sm flex items-center justify-center gap-3"
           >
-            <Save className="w-4 h-4" /> Guardar Reglas
+            <Save className="w-5 h-5" /> GUARDAR REGLAS
           </button>
           
           <button 
             onClick={() => onGenerateProposal(aiSettings)}
             disabled={isGenerating}
-            className="flex-[2] bg-gradient-to-r from-emerald-600 to-teal-600 text-white font-black py-2.5 rounded-xl hover:scale-[1.02] active:scale-95 transition-all text-xs flex items-center justify-center gap-2 shadow-sm disabled:opacity-50"
+            className="flex-[2] bg-gradient-to-r from-emerald-600 to-teal-600 text-white font-black py-5 rounded-[24px] hover:scale-[1.02] active:scale-95 transition-all shadow-xl shadow-emerald-600/20 uppercase tracking-widest text-sm flex items-center justify-center gap-3 disabled:opacity-50"
           >
             {isGenerating ? (
-              <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+              <div className="w-6 h-6 border-4 border-white/30 border-t-white rounded-full animate-spin" />
             ) : (
-              <Sparkles className="w-4 h-4 animate-pulse" />
+              <Sparkles className="w-5 h-5 animate-pulse" />
             )}
-            Generar Propuesta (V3 Engine)
+            GENERAR PROPUESTA MES ACTUAL (V3 ENGINE)
           </button>
         </div>
       </div>
 
-      {/* SIGLAS POR JORNADA */}
-      <div className="bg-white rounded-2xl p-5 border border-slate-100 shadow-sm">
-        <div className="flex items-center justify-between mb-4">
-          <div className="flex items-center gap-3">
-            <div className="p-2.5 bg-purple-50 rounded-xl text-purple-600">
-               <Clock className="w-5 h-5" />
-            </div>
-            <div>
-              <h3 className="text-sm font-black text-slate-800">Siglas por Jornada</h3>
-              <p className="text-xs text-purple-600 font-bold uppercase tracking-widest">Organización de Códigos Horarios (Drag & Drop)</p>
-            </div>
+      {/* DRIVE SYNC SETTINGS */}
+      <div className="bg-white rounded-[32px] p-8 border border-amber-100 shadow-xl relative overflow-hidden">
+        <div className="absolute top-0 right-0 p-8 opacity-5">
+          <Database className="w-32 h-32 text-amber-600" />
+        </div>
+        
+        <div className="flex items-center gap-4 mb-8">
+          <div className="p-4 bg-amber-50 rounded-2xl text-amber-600">
+             <Database className="w-8 h-8" />
           </div>
-          <label className="flex items-center gap-2 px-4 py-2 bg-amber-50 text-amber-700 rounded-xl cursor-pointer hover:bg-amber-100 transition-all font-black text-xs uppercase tracking-widest border border-amber-200 shadow-sm">
-            <Database className="w-4 h-4" /> Importar Siglas
-            <input type="file" className="hidden" accept=".xlsx,.xls" onChange={(e) => handleFileUpload(e, 'siglas')} />
-          </label>
+          <div>
+            <h3 className="text-2xl font-black text-slate-800 tracking-tight">Sincronización Cloud (Censos)</h3>
+            <p className="text-[10px] text-amber-600 font-bold uppercase tracking-widest">Configuración Google Drive</p>
+          </div>
         </div>
 
-        <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            {/* Mañana */}
-            <div className="bg-amber-50 rounded-xl p-4 border border-amber-100">
-              <h4 className="font-black text-amber-800 uppercase text-sm mb-3 flex items-center gap-2">
-                <span className="w-2 h-2 bg-amber-500 rounded-full"></span> Mañana (M)
-              </h4>
-              <div className="max-h-48 overflow-y-auto space-y-1">
-                <SortableContext items={siglasState.m.map(s => s.id)} strategy={verticalListSortingStrategy}>
-                  {siglasState.m.map((item) => (
-                    <SortableSigla key={item.id} id={item.id} sigla={item.sigla} horas={item.horas} color="text-amber-600" />
-                  ))}
-                </SortableContext>
-                {siglasState.m.length === 0 && (
-                  <p className="text-xs text-slate-400 italic">No hay siglas configuradas</p>
-                )}
-              </div>
-            </div>
-
-            {/* Tarde */}
-            <div className="bg-blue-50 rounded-xl p-4 border border-blue-100">
-              <h4 className="font-black text-blue-800 uppercase text-sm mb-3 flex items-center gap-2">
-                <span className="w-2 h-2 bg-blue-500 rounded-full"></span> Tarde (T)
-              </h4>
-              <div className="max-h-48 overflow-y-auto space-y-1">
-                <SortableContext items={siglasState.t.map(s => s.id)} strategy={verticalListSortingStrategy}>
-                  {siglasState.t.map((item) => (
-                    <SortableSigla key={item.id} id={item.id} sigla={item.sigla} horas={item.horas} color="text-blue-600" />
-                  ))}
-                </SortableContext>
-                {siglasState.t.length === 0 && (
-                  <p className="text-xs text-slate-400 italic">No hay siglas configuradas</p>
-                )}
-              </div>
-            </div>
-
-            {/* Noche */}
-            <div className="bg-indigo-50 rounded-xl p-4 border border-indigo-100">
-              <h4 className="font-black text-indigo-800 uppercase text-sm mb-3 flex items-center gap-2">
-                <span className="w-2 h-2 bg-indigo-500 rounded-full"></span> Noche (N)
-              </h4>
-              <div className="max-h-48 overflow-y-auto space-y-1">
-                <SortableContext items={siglasState.n.map(s => s.id)} strategy={verticalListSortingStrategy}>
-                  {siglasState.n.map((item) => (
-                    <SortableSigla key={item.id} id={item.id} sigla={item.sigla} horas={item.horas} color="text-indigo-600" />
-                  ))}
-                </SortableContext>
-                {siglasState.n.length === 0 && (
-                  <p className="text-xs text-slate-400 italic">No hay siglas configuradas</p>
-                )}
-              </div>
-            </div>
+        <div className="flex flex-col md:flex-row gap-4 mb-4">
+          <div className="flex-1 space-y-2">
+            <label className="text-[10px] font-black text-slate-400 uppercase ml-2 block">ID Carpeta Base Censos</label>
+            <input 
+              type="text"
+              className="w-full bg-slate-50 border border-slate-100 p-4 rounded-xl font-bold outline-none focus:border-amber-500 transition-all text-sm"
+              placeholder="Ej: 1eQ6ZQV0I3rpC5lWsQvWlrHZ4AclKNF2C"
+              value={driveFolderId}
+              onChange={e => setDriveFolderId(e.target.value)}
+            />
           </div>
-        </DndContext>
+        </div>
+        <p className="text-xs text-slate-500 mb-6">El sistema organizará los censos automáticamente dentro de esta carpeta por Año y Mes.</p>
+
+        <div className="flex flex-col sm:flex-row gap-4">
+          <button 
+            onClick={validateAndSaveDriveFolder}
+            disabled={isValidatingDrive}
+            className="flex-1 bg-amber-500 text-white font-black py-4 rounded-2xl hover:bg-amber-600 active:scale-95 transition-all shadow-xl shadow-amber-500/20 uppercase tracking-widest text-sm flex items-center justify-center gap-3 disabled:opacity-50"
+          >
+            {isValidatingDrive ? <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" /> : <Save className="w-5 h-5" />}
+            Validar y Guardar ID
+          </button>
+        </div>
       </div>
 
       {/* IMPORT TEMPLATES */}
-      <div className="bg-white rounded-2xl p-5 border border-slate-100 shadow-sm">
-        <div className="flex items-center gap-3 mb-4">
-          <div className="p-2.5 bg-blue-50 rounded-xl text-blue-600">
-             <FileSpreadsheet className="w-5 h-5" />
+      <div className="bg-white rounded-[32px] p-8 border border-slate-100 shadow-xl">
+        <div className="flex items-center gap-4 mb-8">
+          <div className="p-4 bg-blue-50 rounded-2xl text-blue-600">
+             <FileSpreadsheet className="w-8 h-8" />
           </div>
           <div>
-            <h3 className="text-sm font-black text-slate-800">Centro de Plantillas</h3>
-            <p className="text-xs text-blue-600 font-bold uppercase tracking-widest">Descarga de Estructuras para Importación Masiva</p>
+            <h3 className="text-2xl font-black text-slate-800 tracking-tight">CENTRO DE PLANTILLAS</h3>
+            <p className="text-[10px] text-blue-600 font-bold uppercase tracking-widest">Descarga de Estructuras para Importación Masiva</p>
           </div>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
            <div className="flex flex-col gap-4">
             <button 
               onClick={() => downloadTableTemplate('shifts')}
-              className="group bg-slate-50 p-4 rounded-xl border border-slate-100 hover:border-blue-500 transition-all text-left space-y-3 w-full"
+              className="group bg-slate-50 p-8 rounded-[32px] border border-slate-100 hover:border-blue-500 transition-all text-left space-y-4 w-full"
             >
-                <div className="w-9 h-9 bg-white rounded-xl border border-slate-100 flex items-center justify-center text-blue-600 group-hover:bg-blue-600 group-hover:text-white transition-all shadow-sm">
+                <div className="w-12 h-12 bg-white rounded-2xl border border-slate-100 flex items-center justify-center text-blue-600 group-hover:bg-blue-600 group-hover:text-white transition-all shadow-sm">
                   <FileDown className="w-6 h-6" />
                 </div>
                 <h4 className="font-black text-slate-800 uppercase text-sm tracking-tight">Plantilla de Turnos</h4>
-                <p className="text-xs text-slate-400 font-bold leading-relaxed uppercase">Estructura para importar la programación mensual completa.</p>
+                <p className="text-[10px] text-slate-400 font-bold leading-relaxed uppercase">Estructura para importar la programación mensual completa.</p>
             </button>
-            <label className="flex items-center justify-center gap-2 p-4 bg-blue-50 text-blue-700 rounded-2xl cursor-pointer hover:bg-blue-100 transition-all font-black text-xs uppercase tracking-widest border border-blue-200">
+            <label className="flex items-center justify-center gap-2 p-4 bg-blue-50 text-blue-700 rounded-2xl cursor-pointer hover:bg-blue-100 transition-all font-black text-[10px] uppercase tracking-widest border border-blue-200">
               <Database className="w-4 h-4" /> Importar Turnos
               <input type="file" className="hidden" accept=".xlsx,.xls" onChange={(e) => handleFileUpload(e, 'shifts')} />
             </label>
@@ -634,15 +526,15 @@ export const AdminToolbox: React.FC<AdminToolboxProps> = ({
            <div className="flex flex-col gap-4">
             <button 
               onClick={() => downloadTableTemplate('users')}
-              className="group bg-slate-50 p-4 rounded-xl border border-slate-100 hover:border-blue-500 transition-all text-left space-y-3 w-full"
+              className="group bg-slate-50 p-8 rounded-[32px] border border-slate-100 hover:border-blue-500 transition-all text-left space-y-4 w-full"
             >
-                <div className="w-9 h-9 bg-white rounded-xl border border-slate-100 flex items-center justify-center text-blue-600 group-hover:bg-blue-600 group-hover:text-white transition-all shadow-sm">
+                <div className="w-12 h-12 bg-white rounded-2xl border border-slate-100 flex items-center justify-center text-blue-600 group-hover:bg-blue-600 group-hover:text-white transition-all shadow-sm">
                   <UsersIcon className="w-6 h-6" />
                 </div>
                 <h4 className="font-black text-slate-800 uppercase text-sm tracking-tight">Carga Talento Humano</h4>
-                <p className="text-xs text-slate-400 font-bold leading-relaxed uppercase">Actualización masiva de personal, roles y credenciales.</p>
+                <p className="text-[10px] text-slate-400 font-bold leading-relaxed uppercase">Actualización masiva de personal, roles y credenciales.</p>
             </button>
-            <label className="flex items-center justify-center gap-2 p-4 bg-emerald-50 text-emerald-700 rounded-2xl cursor-pointer hover:bg-emerald-100 transition-all font-black text-xs uppercase tracking-widest border border-emerald-200">
+            <label className="flex items-center justify-center gap-2 p-4 bg-emerald-50 text-emerald-700 rounded-2xl cursor-pointer hover:bg-emerald-100 transition-all font-black text-[10px] uppercase tracking-widest border border-emerald-200">
               <Database className="w-4 h-4" /> Importar Usuarios
               <input type="file" className="hidden" accept=".xlsx,.xls" onChange={(e) => handleFileUpload(e, 'users')} />
             </label>
@@ -651,15 +543,15 @@ export const AdminToolbox: React.FC<AdminToolboxProps> = ({
            <div className="flex flex-col gap-4">
             <button 
               onClick={() => downloadTableTemplate('siglas')}
-              className="group bg-slate-50 p-4 rounded-xl border border-slate-100 hover:border-blue-500 transition-all text-left space-y-3 w-full"
+              className="group bg-slate-50 p-8 rounded-[32px] border border-slate-100 hover:border-blue-500 transition-all text-left space-y-4 w-full"
             >
-                <div className="w-9 h-9 bg-white rounded-xl border border-slate-100 flex items-center justify-center text-blue-600 group-hover:bg-blue-600 group-hover:text-white transition-all shadow-sm">
+                <div className="w-12 h-12 bg-white rounded-2xl border border-slate-100 flex items-center justify-center text-blue-600 group-hover:bg-blue-600 group-hover:text-white transition-all shadow-sm">
                   <Clock className="w-6 h-6" />
                 </div>
                 <h4 className="font-black text-slate-800 uppercase text-sm tracking-tight">Catálogo de Siglas</h4>
-                <p className="text-xs text-slate-400 font-bold leading-relaxed uppercase">Descargar configuración actual de siglas.</p>
+                <p className="text-[10px] text-slate-400 font-bold leading-relaxed uppercase">Configurar códigos horarios y su respectiva carga horaria.</p>
             </button>
-            <label className="flex items-center justify-center gap-2 p-4 bg-amber-50 text-amber-700 rounded-2xl cursor-pointer hover:bg-amber-100 transition-all font-black text-xs uppercase tracking-widest border border-amber-200 shadow-sm">
+            <label className="flex items-center justify-center gap-2 p-4 bg-amber-50 text-amber-700 rounded-2xl cursor-pointer hover:bg-amber-100 transition-all font-black text-[10px] uppercase tracking-widest border border-amber-200">
               <Database className="w-4 h-4" /> Importar Siglas
               <input type="file" className="hidden" accept=".xlsx,.xls" onChange={(e) => handleFileUpload(e, 'siglas')} />
             </label>

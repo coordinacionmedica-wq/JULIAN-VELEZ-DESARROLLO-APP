@@ -1,0 +1,141 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // 0. Open access for internal hospital app (auth handled at app level)
+    match /{document=**} {
+      allow read, write: if true;
+    }
+
+    // --- Helpers ---
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isEmailVerified() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isAdmin() {
+      return isSignedIn() && (
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid)) ||
+        (isEmailVerified() && (
+          request.auth.token.email == 'julive17@gmail.com' ||
+          request.auth.token.email == 'coordinacionmedica@correohdsa.gov.co'
+        ))
+      );
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() { return request.resource.data; }
+    function existing() { return resource.data; }
+
+    // --- Specific Validators ---
+    function isValidDoctor(data) {
+      return data.keys().hasAll(['id', 'nombre', 'cat', 'rol', 'st', 'username', 'password']) &&
+             data.nombre is string && data.nombre.size() <= 200 &&
+             data.cat in ['Planta', 'CTA', 'APS', 'Rural', 'Disponibilidad'] &&
+             data.st in ['activo', 'inactivo'];
+    }
+
+    function isValidShiftRequest(data) {
+      return data.status in ['pending', 'approved', 'rejected'] &&
+             data.doctorId is number &&
+             data.day is number &&
+             data.slot in ['m', 't', 'n'];
+    }
+
+    function isValidAuditLog(data) {
+      return data.keys().hasAll(['id', 'timestamp', 'adminName', 'newSigla']) &&
+             data.adminName is string && data.adminName.size() <= 100;
+    }
+
+    // --- Collection Routes ---
+
+    // Admins: Only admins can manage admins. Users can read their own admin doc.
+    match /admins/{uid} {
+      allow read: if isSignedIn() && (isAdmin() || request.auth.uid == uid);
+      allow write: if isAdmin();
+    }
+
+    // Doctors: Everyone can list to see names, but only admins or owner can get details.
+    // Writes are server-side or admin-only.
+    match /doctors/{doctorId} {
+      allow list, get: if isSignedIn();
+      allow create: if isAdmin() && isValidDoctor(incoming());
+      allow update: if (isAdmin() && isValidDoctor(incoming())) ||
+                    (isSignedIn() && request.auth.uid == doctorId && 
+                     incoming().diff(existing()).affectedKeys().hasOnly(['password', 'passwordLastChanged']));
+      allow delete: if isAdmin();
+    }
+
+    // Audit Logs: Immutable. Only admins can create.
+    match /auditLogs/{logId} {
+      allow list, get: if isSignedIn();
+      allow create: if isAdmin() && isValidAuditLog(incoming());
+      allow update, delete: if false;
+    }
+
+    // Shift Requests: Owners can create and edit pending. Admins can approve.
+    match /shiftRequests/{reqId} {
+      allow list, get: if isSignedIn();
+      allow create: if isSignedIn() && isValidShiftRequest(incoming()) && incoming().status == 'pending';
+      allow update: if (isAdmin() && incoming().diff(existing()).affectedKeys().hasOnly(['status'])) ||
+                    (isSignedIn() && existing().status == 'pending' && 
+                     incoming().diff(existing()).affectedKeys().hasOnly(['reason', 'day', 'slot', 'timestamp']));
+      allow delete: if isAdmin() || (isSignedIn() && existing().status == 'pending');
+    }
+
+    // Monthly Data: Core schedule. Any signed-in user can write (internal hospital app).
+    match /monthlyData/{monthKey} {
+      allow get, list: if isSignedIn();
+      allow write: if isSignedIn();
+      
+      match /doctors/{docId} {
+        allow get, list: if isSignedIn();
+        allow write: if isSignedIn();
+      }
+    }
+
+    // Settings: Global config.
+    match /settings/{docId} {
+      allow get: if isSignedIn();
+      allow write: if isSignedIn();
+    }
+
+    // Notifications: Recipient can read and mark as read.
+    match /notifications/{noteId} {
+      allow list, get: if isSignedIn() && (isAdmin() || incoming().doctorId == int(request.auth.uid));
+      allow create: if isAdmin();
+      allow update: if isSignedIn() && incoming().diff(existing()).affectedKeys().hasOnly(['read']);
+      allow delete: if isAdmin();
+    }
+
+    // Rural Availability: Tracking for rural docs.
+    match /ruralAvailability/{id} {
+      allow list, get, create: if isSignedIn();
+      allow update, delete: if isAdmin();
+    }
+
+    // Availability Calls: Log of calls.
+    match /availabilityCalls/{id} {
+      allow list, get, create: if isSignedIn();
+      allow update, delete: if isAdmin();
+    }
+
+    // Training Activities:
+    match /trainingActivities/{activityId} {
+      allow list, get: if isSignedIn();
+      allow create: if isSignedIn();
+      allow update: if (isAdmin() || (isSignedIn() && incoming().diff(existing()).affectedKeys().hasOnly(['files', 'attendees'])));
+      allow delete: if isAdmin();
+    }
+
+    // Test connection
+    match /test/connection {
+      allow read: if true;
+    }
+  }
+}

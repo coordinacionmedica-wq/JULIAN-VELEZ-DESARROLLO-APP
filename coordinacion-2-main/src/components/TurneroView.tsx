@@ -20,7 +20,7 @@ export function TurneroView({ onOpenCallModal, onDownloadTemplate, onImportExcel
   const {
     session, doctors, currentMonthData, variables,
     selectedMonth, setSelectedMonth, selectedYear, setSelectedYear, daysInMonth,
-    availabilityCalls, auditLogs, setCurrentMonthData, setNotification, updateDoctorMonth,
+    availabilityCalls, auditLogs, setCurrentMonthData, setNotification,
   } = useAppContext();
 
   const { setShift: hookSetShift, publishTurnos } = useShiftActions();
@@ -411,7 +411,6 @@ export function TurneroView({ onOpenCallModal, onDownloadTemplate, onImportExcel
         showGridHours={filters.showGridHours}
         isAdmin={!!isAdminUser}
         onSetShift={hookSetShift}
-        updateDoctorMonth={updateDoctorMonth}
         conflicts={conflicts}
         sundays={sundays}
         compactView={compactView}

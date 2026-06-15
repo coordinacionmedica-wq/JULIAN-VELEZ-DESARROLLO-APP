@@ -23,49 +23,17 @@ export interface Doctor {
   registroMedico?: string;
   email?: string;
   telefono?: string;
-  genero?: 'M' | 'F';
   cat: 'Planta' | 'CTA' | 'APS' | 'Rural' | 'Disponibilidad';
   rol: DoctorRole;
   st: 'activo' | 'inactivo';
+  genero?: 'M' | 'F' | string;
+  order?: number;
   contacto?: string;
   username?: string;
   password?: string;
   permissions?: string[];
   passwordLastChanged?: number;
   createdAt?: number;
-  mustChangePassword?: boolean;
-  sortOrder?: number;
-}
-
-export interface RegistrationRequest {
-  id: string;
-  nombre: string;
-  apellidos: string;
-  cedula: string;
-  registroMedico: string;
-  email: string;
-  telefono?: string;
-  genero: 'M' | 'F';
-  requestedRol: string;
-  status: 'pending' | 'approved' | 'rejected';
-  createdAt: number;
-  reviewedAt?: number;
-  reviewedBy?: string;
-  rejectionReason?: string;
-  assignedId?: number;
-}
-
-export interface RegistrationInvitation {
-  id: string;
-  token: string;
-  email?: string;
-  suggestedRol?: string;
-  message?: string;
-  status: 'pending' | 'completed' | 'cancelled';
-  createdAt: number;
-  createdBy: string;
-  completedAt?: number;
-  registrationRequestId?: string;
 }
 
 export type ShiftMap = Record<number, string>; // day -> sigla

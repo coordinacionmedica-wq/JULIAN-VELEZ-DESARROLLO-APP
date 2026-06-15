@@ -1,0 +1,198 @@
+{
+  "entities": {
+    "Doctor": {
+      "title": "Doctor",
+      "description": "Medical staff member",
+      "type": "object",
+      "properties": {
+        "id": { "type": "number" },
+        "nombre": { "type": "string" },
+        "cat": { "enum": ["Planta", "CTA", "APS"] },
+        "rol": { "enum": ["Médico", "Interno", "Enfermera"] },
+        "st": { "enum": ["activo", "inactivo"] },
+        "contacto": { "type": "string" },
+        "username": { "type": "string" },
+        "password": { "type": "string" },
+        "passwordLastChanged": { "type": "number" },
+        "sortOrder": { "type": "number" }
+      },
+      "required": ["id", "nombre", "cat", "rol", "st", "username", "password"]
+    },
+    "AuditLog": {
+      "title": "Audit Log",
+      "description": "System audit for changes",
+      "type": "object",
+      "properties": {
+        "id": { "type": "number" },
+        "timestamp": { "type": "number" },
+        "targetMonth": { "type": "number" },
+        "targetYear": { "type": "number" },
+        "doctorId": { "type": "number" },
+        "doctorName": { "type": "string" },
+        "doctorContact": { "type": "string" },
+        "day": { "type": "number" },
+        "slot": { "enum": ["m", "t", "n"] },
+        "oldSigla": { "type": "string" },
+        "newSigla": { "type": "string" },
+        "adminName": { "type": "string" }
+      }
+    },
+    "ShiftRequest": {
+      "title": "Shift Request",
+      "description": "Request for a shift change",
+      "type": "object",
+      "properties": {
+        "id": { "type": "number" },
+        "timestamp": { "type": "number" },
+        "doctorId": { "type": "number" },
+        "doctorName": { "type": "string" },
+        "day": { "type": "number" },
+        "slot": { "enum": ["m", "t", "n"] },
+        "reason": { "type": "string" },
+        "status": { "enum": ["pending", "approved", "rejected"] },
+        "targetMonth": { "type": "number" },
+        "targetYear": { "type": "number" }
+      }
+    },
+    "MonthlyData": {
+      "title": "Monthly Data",
+      "description": "The shift schedule for a specific month",
+      "type": "object",
+      "properties": {
+        "data": { "type": "object" }
+      }
+    },
+    "Notification": {
+      "title": "Notification",
+      "description": "Notification for a doctor",
+      "type": "object",
+      "properties": {
+        "doctorId": { "type": "number" },
+        "message": { "type": "string" },
+        "read": { "type": "boolean" },
+        "timestamp": { "type": "number" }
+      },
+      "required": ["doctorId", "message", "read", "timestamp"]
+    },
+    "RuralAvailability": {
+      "title": "Rural Availability",
+      "description": "Record of availability calls for rural doctors",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "doctorId": { "type": "number" },
+        "doctorName": { "type": "string" },
+        "callDateTime": { "type": "number" },
+        "hospitalArrivalTime": { "type": "string" },
+        "activity": { "type": "string" },
+        "patientName": { "type": "string" },
+        "patientId": { "type": "string" },
+        "diagnosis": { "type": "string" },
+        "acceptancePlace": { "type": "string" },
+        "calledBy": { "type": "string" },
+        "terminationDateTime": { "type": "number" },
+        "totalHours": { "type": "number" },
+        "timestamp": { "type": "number" }
+      }
+    },
+    "ThemeSettings": {
+      "title": "Theme Settings",
+      "description": "Dynamic visual configuration for the app",
+      "type": "object",
+      "properties": {
+        "primary": { "type": "string" },
+        "font": { "enum": ["sans", "serif", "mono"] }
+      }
+    },
+    "AvailabilityCall": {
+      "title": "Availability Call",
+      "description": "Record of a call to a doctor on availability",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "timestamp": { "type": "number" },
+        "doctorId": { "type": "number" },
+        "doctorName": { "type": "string" },
+        "callerName": { "type": "string" },
+        "service": { "type": "string" },
+        "slot": { "enum": ["m", "t", "n"] },
+        "day": { "type": "number" },
+        "month": { "type": "number" },
+        "year": { "type": "number" }
+      }
+    },
+    "TrainingActivity": {
+      "title": "Training Activity",
+      "description": "Educational activity for medical staff",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "month": { "type": "number" },
+        "year": { "type": "number" },
+        "activityName": { "type": "string" },
+        "day": { "type": "number" },
+        "place": { "type": "string" },
+        "modality": { "enum": ["presencial", "virtual", "mixta"] },
+        "hours": { "type": "number" },
+        "targetGroup": { "type": "string" },
+        "responsible": { "type": "string" },
+        "targetPopulation": { "type": "string" },
+        "files": { "type": "object" },
+        "attendees": { "type": "array" },
+        "status": { "enum": ["programada", "realizada", "cancelada"] },
+        "timestamp": { "type": "number" }
+      },
+      "required": ["id", "month", "year", "activityName", "day", "place", "modality", "hours", "targetGroup", "responsible", "targetPopulation", "status", "timestamp"]
+    }
+  },
+  "firestore": {
+    "doctors": {
+      "schema": "Doctor",
+      "description": "Collection of all medical staff"
+    },
+    "auditLogs": {
+      "schema": "AuditLog",
+      "description": "Collection of audit records"
+    },
+    "shiftRequests": {
+      "schema": "ShiftRequest",
+      "description": "Collection of shift requests"
+    },
+    "monthlyData": {
+      "schema": "MonthlyData",
+      "description": "Scheduling data indexed by monthKey (e.g., '2026_4'). Subcollection 'doctors' contains individual staff data for that month."
+    },
+    "admins": {
+      "schema": {
+        "title": "Admin",
+        "type": "object",
+        "properties": {
+          "email": { "type": "string" },
+          "name": { "type": "string" },
+          "lastLogin": { "type": "number" }
+        }
+      },
+      "description": "Authenticated administrator accounts"
+    },
+    "settings": {
+      "schema": "ThemeSettings",
+      "description": "Global app settings including variables and theme (document 'theme')"
+    },
+    "notifications": {
+      "schema": "Notification",
+      "description": "Notifications for doctors"
+    },
+    "ruralAvailability": {
+      "schema": "RuralAvailability",
+      "description": "Collection of rural availability reports"
+    },
+    "availabilityCalls": {
+      "schema": "AvailabilityCall",
+      "description": "Collection of calls to doctors on availability"
+    },
+    "trainingActivities": {
+      "schema": "TrainingActivity",
+      "description": "Collection of training activities"
+    }
+  }
+}

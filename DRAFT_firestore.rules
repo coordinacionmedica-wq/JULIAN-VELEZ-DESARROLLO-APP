@@ -1,9 +1,9 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    // 0. Open access for internal hospital app (auth handled at app level)
+    // 0. Global Safety Net
     match /{document=**} {
-      allow read, write: if true;
+      allow read, write: if false;
     }
 
     // --- Helpers ---
@@ -88,21 +88,21 @@ service cloud.firestore {
       allow delete: if isAdmin() || (isSignedIn() && existing().status == 'pending');
     }
 
-    // Monthly Data: Core schedule. Any signed-in user can write (internal hospital app).
+    // Monthly Data: Core schedule. Only admins write.
     match /monthlyData/{monthKey} {
       allow get, list: if isSignedIn();
-      allow write: if isSignedIn();
+      allow write: if isAdmin();
       
       match /doctors/{docId} {
         allow get, list: if isSignedIn();
-        allow write: if isSignedIn();
+        allow write: if isAdmin();
       }
     }
 
     // Settings: Global config.
     match /settings/{docId} {
       allow get: if isSignedIn();
-      allow write: if isSignedIn();
+      allow write: if isAdmin();
     }
 
     // Notifications: Recipient can read and mark as read.

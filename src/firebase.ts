@@ -1,15 +1,24 @@
 import { initializeApp } from 'firebase/app';
 import { getAuth } from 'firebase/auth';
-import { doc, getDocFromServer, initializeFirestore, persistentMultipleTabManager, persistentLocalCache } from 'firebase/firestore';
+import { getFirestore, doc, getDocFromServer, enableMultiTabIndexedDbPersistence } from 'firebase/firestore';
 import config from '../firebase-applet-config.json';
 
 export const firebaseConfig = config;
 
 const app = initializeApp(config);
-export const db = initializeFirestore(app, {
-  localCache: persistentLocalCache({ tabManager: persistentMultipleTabManager() })
-}, config.firestoreDatabaseId);
+export const db = getFirestore(app, config.firestoreDatabaseId);
 export const auth = getAuth(app);
+
+// Enable Offline Persistence
+enableMultiTabIndexedDbPersistence(db).catch((err) => {
+    if (err.code === 'failed-precondition') {
+        // Multiple tabs open, persistence can only be enabled in one tab at a time.
+        console.warn('Persistence failed-precondition: multiple tabs open');
+    } else if (err.code === 'unimplemented') {
+        // The current browser does not support all of the features required to enable persistence
+        console.warn('Persistence unimplemented: browser not supported');
+    }
+});
 
 export enum OperationType {
   CREATE = 'create',
@@ -55,7 +64,10 @@ export function handleFirestoreError(error: unknown, operationType: OperationTyp
     path
   }
   console.error('Firestore Error: ', JSON.stringify(errInfo));
-  throw new Error(JSON.stringify(errInfo));
+  // Do not throw for passive read operations so we don't crash the app on expected permission denials
+  if (operationType === OperationType.WRITE || operationType === OperationType.CREATE || operationType === OperationType.UPDATE || operationType === OperationType.DELETE) {
+    throw new Error(JSON.stringify(errInfo));
+  }
 }
 
 async function testConnection() {

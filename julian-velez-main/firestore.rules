@@ -1,0 +1,120 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isAdmin() {
+      // Allow any signed-in user (including anonymous) to act as admin
+      // for the purpose of "open in any browser without Google account"
+      return isSignedIn();
+    }
+
+    match /doctors/{doctorId} {
+      allow get, list: if isSignedIn();
+      allow create: if isAdmin(); // Registration handled via API
+      allow update: if isAdmin() || (isSignedIn() && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['password', 'passwordLastChanged']));
+      allow delete: if isAdmin();
+    }
+
+    match /auditLogs/{logId} {
+      allow get, list: if isSignedIn();
+      allow create: if isSignedIn();
+      allow update, delete: if false;
+    }
+
+    match /shiftRequests/{reqId} {
+      function isValidShiftRequest(data) {
+        return data.id is number &&
+               data.timestamp is number &&
+               data.doctorId is number &&
+               data.doctorName is string &&
+               data.day is number &&
+               data.slot in ['m', 't', 'n'] &&
+               data.reason is string && data.reason.size() > 0 &&
+               data.status in ['pending', 'approved', 'rejected'] &&
+               data.targetMonth is number &&
+               data.targetYear is number;
+      }
+      allow get, list: if isSignedIn();
+      allow create: if isSignedIn() && isValidShiftRequest(request.resource.data) && request.resource.data.status == 'pending';
+      allow update: if (
+        (isAdmin() && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status'])) ||
+        (isSignedIn() && resource.data.status == 'pending' && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['reason', 'day', 'slot', 'timestamp']))
+      );
+      allow delete: if isAdmin() || (isSignedIn() && resource.data.status == 'pending');
+    }
+
+    match /monthlyData/{monthKey} {
+      allow get, list: if isSignedIn();
+      allow write: if isAdmin();
+      
+      match /doctors/{doctorId} {
+        allow get, list: if isSignedIn();
+        allow write: if isAdmin();
+      }
+    }
+    
+    match /settings/{docId} {
+      function isValidSettings(id, data) {
+        return id != 'variables' || (
+          (data.get('m', {}) is map) && 
+          (data.get('t', {}) is map) && 
+          (data.get('n', {}) is map)
+          // Note: Full content validation of map values is difficult in rules without loops, 
+          // but we can at least ensure the main slots are maps.
+        );
+      }
+      allow get: if isSignedIn();
+      allow write: if isAdmin() && isValidSettings(docId, request.resource.data);
+    }
+
+    match /availabilityCalls/{callId} {
+      allow get, list: if isSignedIn();
+      allow create: if isSignedIn();
+      allow update, delete: if isAdmin();
+    }
+
+    match /notifications/{noteId} {
+      allow get, list: if isSignedIn();
+      allow create: if isAdmin();
+      allow update: if isSignedIn();
+      allow delete: if isAdmin();
+    }
+    
+    match /admins/{uid} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin();
+    }
+
+    match /ruralAvailability/{id} {
+      allow get, list: if isSignedIn();
+      allow create: if isSignedIn();
+      allow update, delete: if isAdmin();
+    }
+
+    match /trainingActivities/{activityId} {
+      function isValidActivity(data) {
+        return data.id is string &&
+               data.activityName is string && data.activityName.size() > 0 &&
+               data.day is number &&
+               data.month is number &&
+               data.year is number &&
+               data.status in ['programada', 'realizada', 'cancelada'];
+      }
+      allow get, list: if isSignedIn();
+      allow create: if isSignedIn() && isValidActivity(request.resource.data);
+      allow update: if (isAdmin() || (isSignedIn() && isValidActivity(request.resource.data)));
+      allow delete: if isAdmin();
+    }
+
+    match /test/connection {
+      allow read: if true;
+    }
+  }
+}

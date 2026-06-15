@@ -10,7 +10,6 @@
       "DOM.Iterable"
     ],
     "skipLibCheck": true,
-    "esModuleInterop": true,
     "moduleResolution": "bundler",
     "isolatedModules": true,
     "moduleDetection": "force",
@@ -22,12 +21,10 @@
       ]
     },
     "allowImportingTsExtensions": true,
-    "noEmit": true,
-    "strict": false,
-    "baseUrl": ".",
-    "types": ["react", "react-dom", "node"],
-    "forceConsistentCasingInFileNames": true
+    "noEmit": true
   },
-  "include": ["src/**/*", "vite.config.ts"],
-  "exclude": ["node_modules", "dist"]
+  "include": [
+    "src/**/*",
+    "server.ts"
+  ]
 }
