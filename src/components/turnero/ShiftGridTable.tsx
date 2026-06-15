@@ -247,6 +247,14 @@ export function ShiftGridTable(props: ShiftGridTableProps) {
     // Ctrl+Shift+Arrow keys: Extend selection (works when editing or with selection)
     if ((e.ctrlKey || e.metaKey) && e.shiftKey) {
       e.preventDefault();
+
+      // If no selection start, use current editing cell as start
+      if (!selectionStart && editingCell) {
+        setSelectionStart({ doctorId: editingCell.doctorId, day: editingCell.day, slot: editingCell.slot });
+        setSelectedCells(new Set([getCellKey(editingCell.doctorId, editingCell.day, editingCell.slot)]));
+        return;
+      }
+
       if (!selectionStart) return;
 
       const currentDoctorId = editingCell?.doctorId || selectionStart.doctorId;
