@@ -134,13 +134,19 @@ export function ShiftGridTable(props: ShiftGridTableProps) {
   const handleDeleteSelected = async () => {
     if (!isAdmin || selectedCells.size === 0) return;
 
-    for (const cellKey of selectedCells) {
+    // Convert to array to avoid issues with Set iteration during async operations
+    const cellsToDelete = Array.from(selectedCells);
+
+    for (const cellKey of cellsToDelete) {
       const [doctorId, day, slot] = cellKey.split('-');
       await onSetShift(Number(doctorId), Number(day), slot as SlotType, 'X');
+      // Small delay to ensure each update completes before next
+      await new Promise(resolve => setTimeout(resolve, 10));
     }
+
     setSelectedCells(new Set());
     setSelectionStart(null);
-    setPasteMessage(`✓ ${selectedCells.size} celdas borradas`);
+    setPasteMessage(`✓ ${cellsToDelete.length} celdas borradas`);
     setTimeout(() => setPasteMessage(''), 3000);
   };
 
