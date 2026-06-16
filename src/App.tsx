@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
   Users, 
@@ -144,6 +144,66 @@ export const sortDoctors = (a: Doctor, b: Doctor) => {
   return a.nombre.localeCompare(b.nombre);
 };
 
+// -- Holidays Utility --
+function getColombianHolidays(year: number): Set<number> {
+  const a = year % 19;
+  const b = Math.floor(year / 100);
+  const c = year % 100;
+  const d = Math.floor(b / 4);
+  const e = b % 4;
+  const f = Math.floor((b + 8) / 25);
+  const g = Math.floor((b - f + 1) / 3);
+  const h = (19 * a + b - d - g + 15) % 30;
+  const i = Math.floor(c / 4);
+  const k = c % 4;
+  const l = (32 + 2 * e + 2 * i - h - k) % 7;
+  const m = Math.floor((a + 11 * h + 22 * l) / 451);
+  const month = Math.floor((h + l - 7 * m + 114) / 31) - 1; // 0-based
+  const day = ((h + l - 7 * m + 114) % 31) + 1;
+  const easter = new Date(year, month, day);
+
+  const addDays = (date: Date, days: number) => {
+    const res = new Date(date);
+    res.setDate(res.getDate() + days);
+    return res;
+  };
+
+  const toNextMonday = (date: Date) => {
+    const dow = date.getDay();
+    if (dow === 1) return date;
+    const diff = dow === 0 ? 1 : 8 - dow;
+    return addDays(date, diff);
+  };
+
+  const holidays = [
+    new Date(year, 0, 1),
+    toNextMonday(new Date(year, 0, 6)),
+    toNextMonday(new Date(year, 2, 19)),
+    addDays(easter, -3),
+    addDays(easter, -2),
+    new Date(year, 4, 1),
+    toNextMonday(addDays(easter, 43)),
+    toNextMonday(addDays(easter, 64)),
+    toNextMonday(addDays(easter, 71)),
+    toNextMonday(new Date(year, 5, 29)),
+    new Date(year, 6, 20),
+    new Date(year, 7, 7),
+    toNextMonday(new Date(year, 7, 15)),
+    toNextMonday(new Date(year, 9, 12)),
+    toNextMonday(new Date(year, 10, 1)),
+    toNextMonday(new Date(year, 10, 11)),
+    new Date(year, 11, 8),
+    new Date(year, 11, 25),
+  ];
+
+  const holidaySet = new Set<number>();
+  holidays.forEach(h => {
+    // Return timestamp format: YYYYMMDD
+    holidaySet.add(year * 10000 + (h.getMonth() + 1) * 100 + h.getDate());
+  });
+  return holidaySet;
+}
+
 export default function App() {
   // View States
   const [isBooting, setIsBooting] = useState(true);
@@ -151,6 +211,14 @@ export default function App() {
   const [session, setSession] = useState<UserSession | null>(null);
   const [selectedCells, setSelectedCells] = useState<Set<string>>(new Set());
   const [selectionStart, setSelectionStart] = useState<{ doctorId: number; day: number; slot: SlotType } | null>(null);
+
+  // Drag to scroll refs
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const isDragging = useRef(false);
+  const startX = useRef(0);
+  const startY = useRef(0);
+  const scrollLeft = useRef(0);
+  const scrollTop = useRef(0);
 
   useEffect(() => {
     const handleOnline = () => setIsOnline(true);
@@ -168,6 +236,7 @@ export default function App() {
   const [selectedMonth, setSelectedMonth] = useState(new Date().getMonth());
   const [selectedYear, setSelectedYear] = useState(new Date().getFullYear());
   const daysInMonth = new Date(selectedYear, selectedMonth + 1, 0).getDate();
+  const currentHolidays = useMemo(() => getColombianHolidays(selectedYear), [selectedYear]);
   const [doctorFilter, setDoctorFilter] = useState<number[]>([]); 
   const [selectedRoles, setSelectedRoles] = useState<string[]>([]);
   const [selectedCategories, setSelectedCategories] = useState<string[]>([]);
@@ -176,6 +245,7 @@ export default function App() {
   const [showCatSelector, setShowCatSelector] = useState(false);
   const [showGridHours, setShowGridHours] = useState(false);
   const [editingCell, setEditingCell] = useState<{ id: number, d: number, slot: SlotType, val: string } | null>(null);
+  const [dragFillInfo, setDragFillInfo] = useState<{ active: boolean, val: string } | null>(null);
 
   // Data States
   const [doctors, setDoctors] = useState<Doctor[]>([]);
@@ -655,6 +725,8 @@ export default function App() {
 
   // -- Monthly Data Sync (Dependent on Auth) --
   const [isMonthPublished, setIsMonthPublished] = useState(false);
+  const [monthlyActivities, setMonthlyActivities] = useState<Record<number, string>>({});
+  
   useEffect(() => {
     if (!fbUser) return;
 
@@ -663,8 +735,10 @@ export default function App() {
     const unsubMeta = onSnapshot(docRef, (snap) => {
       if (snap.exists()) {
         setIsMonthPublished(!!snap.data().published);
+        setMonthlyActivities(snap.data().activities || {});
       } else {
         setIsMonthPublished(false);
+        setMonthlyActivities({});
       }
     }, (err) => {
       if (err.code !== 'permission-denied') {
@@ -843,6 +917,17 @@ export default function App() {
       await setDoc(doc(db, 'monthlyData', monthKey, 'doctors', doctorId.toString()), data);
     } catch (err) {
       handleFirestoreError(err, OperationType.WRITE, `monthlyData/${monthKey}/doctors/${doctorId}`);
+    }
+  };
+
+  const updateMonthActivity = async (day: number, text: string) => {
+    if (session?.r !== 'admin') return;
+    const monthKey = `${selectedYear}_${selectedMonth}`;
+    try {
+      setMonthlyActivities(prev => ({...prev, [day]: text}));
+      await setDoc(doc(db, 'monthlyData', monthKey), { activities: { [day]: text } }, { merge: true });
+    } catch (err) {
+      console.error(err);
     }
   };
 
@@ -2563,13 +2648,6 @@ Donde doctorId es el ID numérico del médico y las llaves de los días son del 
             await setDoc(doc(db, 'auditLogs', logId.toString()), newLog);
           }
           
-          if (slot === 'n' && nextSigla !== 'X' && nextSigla !== 'PT') {
-            const lastDay = new Date(selectedYear, selectedMonth + 1, 0).getDate();
-            if (day < lastDay) {
-              docShifts.m[day + 1] = 'PT';
-            }
-          }
-
           await updateDoctorMonth(doctorId, docShifts);
           if (new Date().getDate() === 1) {
             setNotification({ message: `Turno ${nextSigla} guardado`, type: 'success' });
@@ -3053,71 +3131,7 @@ Usa un tono directivo, formal y conciso en español. Solo usa negritas y viñeta
 
   // -- Calculations --
   const conflicts = useMemo(() => {
-    const map: Record<string, { type: string, message: string }[]> = {};
-    const criticalCoverageMap: Record<string, string[]> = {};
-    const criticalSiglas: Record<SlotType, string[]> = {
-      m: ['M'],
-      t: ['T'],
-      n: ['N']
-    };
-    
-    doctors.forEach(doc => {
-      if (doc.st !== 'activo') return;
-      
-      for (let d = 1; d <= daysInMonth; d++) {
-        const m = currentMonthData[doc.id]?.m?.[d] || 'X';
-        const t = currentMonthData[doc.id]?.t?.[d] || 'X';
-        const n = currentMonthData[doc.id]?.n?.[d] || 'X';
-
-        const activeSlots = [
-          { s: 'm' as SlotType, v: m },
-          { s: 't' as SlotType, v: t },
-          { s: 'n' as SlotType, v: n }
-        ].filter(x => x.v.toUpperCase() !== 'X' && x.v.toUpperCase() !== 'PT');
-
-        // 1. Same Day Overlap
-        if (activeSlots.length > 1) {
-          activeSlots.forEach(as => {
-            const key = `${doc.id}-${d}-${as.s}`;
-            if (!map[key]) map[key] = [];
-            map[key].push({ 
-              type: 'overlap', 
-              message: `Sobrecarga: El médico tiene múltiples turnos activos el mismo día (${activeSlots.map(x => x.s.toUpperCase()).join(', ')}).` 
-            });
-          });
-        }
-
-        // 2. Post-Turno (Night -> Morning day+1)
-        if (n.toUpperCase() !== 'X' && n.toUpperCase() !== 'PT' && d < daysInMonth) {
-          const nextM = currentMonthData[doc.id]?.m?.[d + 1] || 'X';
-          if (nextM.toUpperCase() !== 'X' && nextM.toUpperCase() !== 'PT') {
-            const keyN = `${doc.id}-${d}-n`;
-            const keyM = `${doc.id}-${d+1}-m`;
-            if (!map[keyN]) map[keyN] = [];
-            if (!map[keyM]) map[keyM] = [];
-            const msg = `Conflicto Post-Turno: El médico tiene turno de noche y turno de mañana al día siguiente sin descanso (PT).`;
-            map[keyN].push({ type: 'post-turno', message: msg });
-            map[keyM].push({ type: 'post-turno', message: msg });
-          }
-        }
-      }
-    });
-
-    // 3. Critical Coverage
-    for (let d = 1; d <= daysInMonth; d++) {
-      (['m', 't', 'n'] as SlotType[]).forEach(slot => {
-        const assigned = Object.values(currentMonthData).map(ds => ds[slot]?.[d] || 'X');
-        criticalSiglas[slot].forEach(sigla => {
-          if (!assigned.some(a => a.toUpperCase() === sigla.toUpperCase())) {
-            const key = `${d}-${slot}`;
-            if (!criticalCoverageMap[key]) criticalCoverageMap[key] = [];
-            criticalCoverageMap[key].push(`Falta cobertura crítica: '${sigla}'`);
-          }
-        });
-      });
-    }
-
-    return { personal: map, coverage: criticalCoverageMap };
+    return { personal: {}, coverage: {} };
   }, [currentMonthData, doctors, daysInMonth]);
 
   const globalTotalHours = useMemo(() => {
@@ -4423,7 +4437,35 @@ Usa un tono directivo, formal y conciso en español. Solo usa negritas y viñeta
                    <span>Días del Mes →</span>
                 </div>
                 
-                <div className="overflow-auto border border-slate-200 rounded-[18px] bg-white shadow-xl max-h-[calc(100vh-250px)] custom-scrollbar">
+                <div 
+                  ref={scrollContainerRef}
+                  onMouseDown={(e) => {
+                    isDragging.current = true;
+                    startX.current = e.pageX - scrollContainerRef.current!.offsetLeft;
+                    startY.current = e.pageY - scrollContainerRef.current!.offsetTop;
+                    scrollLeft.current = scrollContainerRef.current!.scrollLeft;
+                    scrollTop.current = scrollContainerRef.current!.scrollTop;
+                  }}
+                  onMouseLeave={() => {
+                    isDragging.current = false;
+                    if (dragFillInfo) setDragFillInfo(null);
+                  }}
+                  onMouseUp={() => {
+                    isDragging.current = false;
+                    if (dragFillInfo) setDragFillInfo(null);
+                  }}
+                  onMouseMove={(e) => {
+                    if (!isDragging.current) return;
+                    e.preventDefault();
+                    const x = e.pageX - scrollContainerRef.current!.offsetLeft;
+                    const y = e.pageY - scrollContainerRef.current!.offsetTop;
+                    const walkX = (x - startX.current) * 2; // scroll-fast
+                    const walkY = (y - startY.current) * 2; 
+                    scrollContainerRef.current!.scrollLeft = scrollLeft.current - walkX;
+                    scrollContainerRef.current!.scrollTop = scrollTop.current - walkY;
+                  }}
+                  className="overflow-auto border border-slate-200 rounded-[18px] bg-white shadow-xl max-h-[calc(100vh-250px)] custom-scrollbar cursor-grab active:cursor-grabbing"
+                >
                   <table 
                     className="w-full text-[10px] text-center border-collapse relative"
                   >
@@ -4436,10 +4478,24 @@ Usa un tono directivo, formal y conciso en español. Solo usa negritas y viñeta
                       {Array.from({ length: daysInMonth }, (_, i) => {
                         const day = i + 1;
                         const dow = new Date(selectedYear, selectedMonth, day).getDay();
+                        const timestamp = selectedYear * 10000 + (selectedMonth + 1) * 100 + day;
+                        const isHolidayOrSunday = dow === 0 || currentHolidays.has(timestamp);
                         return (
-                          <th key={day} className={`px-2 py-2 border border-slate-200 border-b sticky top-0 bg-slate-50 z-40 ${dow === 0 ? 'border-r-2 border-r-sky-500' : ''}`}>
-                            <div className="text-slate-800 text-[11px] font-bold">{day}</div>
-                            <div className="text-[8px] text-emerald-600 uppercase font-bold">{DAY_NAMES[dow]}</div>
+                          <th key={day} className={`px-2 py-2 border border-slate-200 border-b sticky top-0 z-40 ${isHolidayOrSunday ? 'bg-rose-100' : 'bg-slate-50'} ${dow === 0 ? 'border-r-2 border-r-sky-500' : ''}`}>
+                            <div className={`text-[11px] font-bold ${isHolidayOrSunday ? 'text-rose-900' : 'text-slate-800'}`}>{day}</div>
+                            <div className={`text-[8px] uppercase font-bold ${isHolidayOrSunday ? 'text-rose-600' : 'text-emerald-600'}`}>{DAY_NAMES[dow]}</div>
+                            {session?.r === 'admin' ? (
+                              <input 
+                                className="w-full text-center text-[7px] bg-transparent outline-none border-none border-t border-slate-300 mt-1 placeholder:text-slate-400 focus:ring-0 px-0"
+                                placeholder="..."
+                                value={monthlyActivities[day] || ''}
+                                onChange={e => updateMonthActivity(day, e.target.value)}
+                              />
+                            ) : (
+                              <div className="text-[7px] text-slate-500 font-normal mt-1 min-h-[14px]">
+                                {monthlyActivities[day]}
+                              </div>
+                            )}
                           </th>
                         );
                       })}
@@ -4490,22 +4546,28 @@ Usa un tono directivo, formal y conciso en español. Solo usa negritas y viñeta
                       }
                       if (firstName.toLowerCase() === 'andrea') predictedGender = 'F';
 
+                      const capitalize = (s: string) => s ? s.charAt(0).toUpperCase() + s.slice(1).toLowerCase() : '';
                       const prefix = predictedGender === 'F' ? 'Dra.' : 'Dr.';
-                      const displayName = `${prefix} ${firstName} ${firstLastName}`.toUpperCase();
+                      const displayName = `${prefix} ${capitalize(firstName)} ${capitalize(firstLastName)}`;
 
                       return (['m', 't', 'n'] as SlotType[]).map((slot, sIdx) => (
                         <tr key={`${med.id}-${slot}`} className={`group hover:bg-slate-50 transition-colors ${sIdx === 2 ? 'border-b-4 border-slate-200' : ''}`}>
                           {sIdx === 0 && (
                             <td rowSpan={3} className="sticky left-0 bg-white z-20 text-left px-2 md:px-4 border-r-2 border-sky-500 border-b border-slate-200 shadow-xl group-hover:bg-slate-50 max-w-[100px] md:max-w-none">
-                              <div className="font-bold text-slate-800 text-[9px] md:text-xs truncate" title={displayName}>{displayName}</div>
+                              <div className="font-medium text-slate-800 text-[9px] md:text-xs truncate" title={displayName}>{displayName}</div>
                             </td>
                           )}
-                          <td className="sticky left-[100px] md:left-[140px] z-20 slot-label bg-slate-50 text-slate-400 font-black text-[8px] py-2 border-r border-slate-200 uppercase shadow-[2px_0_5px_rgba(0,0,0,0.02)]">
-                            {slot === 'm' ? 'Mañana' : slot === 't' ? 'Tarde' : 'Noche'}
+                          <td className="sticky left-[100px] md:left-[140px] z-20 slot-label bg-slate-50 text-slate-600 font-bold text-[10px] py-1 border-r border-slate-200 shadow-[2px_0_5px_rgba(0,0,0,0.02)]">
+                            <div style={{ writingMode: 'vertical-lr', transform: 'rotate(180deg)' }} className="mx-auto flex justify-center uppercase tracking-widest leading-none h-[40px] items-center">
+                              {slot.toUpperCase()}
+                            </div>
                           </td>
                           {Array.from({ length: daysInMonth }, (_, i) => {
                             const d = i + 1;
                             const dow = new Date(selectedYear, selectedMonth, d).getDay();
+                            const timestamp = selectedYear * 10000 + (selectedMonth + 1) * 100 + d;
+                            const isHolidayOrSunday = dow === 0 || currentHolidays.has(timestamp);
+                            
                             const val = currentMonthData[med.id]?.[slot]?.[d] || 'X';
                             const isPT = val.toUpperCase() === 'PT';
                             const isShift = val.toUpperCase() !== 'X';
@@ -4520,9 +4582,19 @@ Usa un tono directivo, formal y conciso en español. Solo usa negritas y viñeta
                                 key={d}
                                 tabIndex={0}
                                 data-ref={`${med.id}-${slot}-${d}`}
-                                onDoubleClick={() => {
+                                onMouseDown={(e) => {
                                   if (!isAdminUser) return;
-                                  setEditingCell({ id: med.id, d, slot, val: val === 'X' ? '' : val });
+                                  if (isEditing) return;
+                                  if (!e.shiftKey && !e.ctrlKey && !e.metaKey) {
+                                    e.stopPropagation(); // Prevent panning
+                                    setDragFillInfo({ active: true, val: val });
+                                  }
+                                }}
+                                onMouseEnter={() => {
+                                  if (!isAdminUser) return;
+                                  if (dragFillInfo?.active) {
+                                    setDocShift(med.id, d, slot, dragFillInfo.val || 'X');
+                                  }
                                 }}
                                 onClick={(e) => {
                                   if (!isAdminUser) return;
@@ -4573,7 +4645,7 @@ Usa un tono directivo, formal y conciso en español. Solo usa negritas y viñeta
                                           setSelectedCells(new Set());
                                           setSelectionStart(null);
                                       } else {
-                                          cycleShift(med.id, d, slot);
+                                          setEditingCell({ id: med.id, d, slot, val: val === 'X' ? '' : val });
                                       }
                                   }
                                   
@@ -4601,16 +4673,15 @@ Usa un tono directivo, formal y conciso en español. Solo usa negritas y viñeta
                                   if (!isAdminUser) return;
                                   handleGridPaste(e, med.id, slot, d);
                                 }}
-                                title={cellConflicts.map(c => c.message).join('\n')}
+                                title=""
                                 className={`
                                   border border-slate-200 py-0 cursor-pointer focus:outline-none focus:ring-2 focus:ring-sky-500 focus:z-10
-                                  transition-all duration-150 relative h-full min-h-[30px]
+                                  transition-all duration-150 relative h-full min-h-[30px] text-slate-900 font-normal
                                   ${dow === 0 ? 'border-r-2 border-r-sky-500' : ''}
                                   ${isSelected ? 'bg-sky-100 ring-2 ring-sky-500 ring-inset z-10' :
-                                    hasConflict ? 'bg-rose-50 border-rose-200 text-rose-600' :
-                                    isPT ? 'bg-stone-100 text-amber-600 font-black' :
-                                    isShift ? 'bg-slate-50 text-slate-800' : 'bg-white hover:bg-slate-50 opacity-50 scale-90 text-slate-400'
-                                  }
+                                    isHolidayOrSunday ? 'bg-rose-50 hover:bg-rose-100 shadow-inner' :
+                                    isPT ? 'bg-stone-100' :
+                                    isShift ? 'bg-slate-50' : 'bg-white hover:bg-slate-50'}
                                 `}
                               >
                                 {isEditing ? (
@@ -4637,7 +4708,7 @@ Usa un tono directivo, formal y conciso en español. Solo usa negritas y viñeta
                                   />
                                 ) : (
                                   <>
-                                    <span className={`block w-full h-full min-h-[16px] text-[10px] tracking-tight flex items-center justify-center ${isPT || hasConflict || isShift ? 'font-black' : 'font-medium'} ${hasConflict ? 'text-rose-600' : ''}`}>
+                                    <span className={`block w-full h-full min-h-[16px] text-[10px] tracking-tight flex items-center justify-center text-slate-900 font-normal`}>
                                       {val !== 'X' ? (showGridHours ? `${val} (${getVarHours(slot, val)})` : val) : ''}
                                     </span>
                                   </>

@@ -1,6 +1,0 @@
-{
-  "name": "Sistema de Gestión de Turnos Médicos - ESE Roldanillo",
-  "description": "Medical shift scheduling system with vertical summation logic, automatic post-turno generation, administrative overwatch, doctor portals, and notification logging.",
-  "requestFramePermissions": [],
-  "majorCapabilities": []
-}
