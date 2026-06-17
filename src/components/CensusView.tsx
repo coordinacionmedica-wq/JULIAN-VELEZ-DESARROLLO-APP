@@ -56,6 +56,9 @@ export function CensusView({ currentUser, isAdmin, isAuthenticated }: Props) {
   const [editingPatient, setEditingPatient] = useState<Patient | null>(null);
   const [viewMode, setViewMode] = useState<'grid' | 'table'>('grid');
   const [showDriveFiles, setShowDriveFiles] = useState(false);
+  const [showHandoverModal, setShowHandoverModal] = useState(false);
+  const [handoverShift, setHandoverShift] = useState<'m' | 't' | 'n'>('m');
+  const [handoverReceiver, setHandoverReceiver] = useState('');
   const [driveFiles, setDriveFiles] = useState<{ id: string, name: string, webViewLink: string, createdTime?: string }[]>([]);
   const [driveYear, setDriveYear] = useState(new Date().getFullYear().toString());
   const [driveMonth, setDriveMonth] = useState((new Date().getMonth() + 1).toString().padStart(2, '0'));
@@ -197,17 +200,23 @@ export function CensusView({ currentUser, isAdmin, isAuthenticated }: Props) {
       const monthPrefix = (now.getMonth() + 1).toString().padStart(2, '0');
       const monthName = new Intl.DateTimeFormat('es', { month: 'long' }).format(now);
       const month = `${monthPrefix} - ${monthName.toUpperCase()}`; // e.g. "06 - JUNIO"
+      const dayStr = now.getDate().toString().padStart(2, '0');
       
-      const monthFolderId = await GoogleDriveService.getOrCreateMonthFolder(year, month);
+      const hour = now.getHours();
+      let jornadaStr = "Mañana";
+      if (hour >= 13 && hour < 19) jornadaStr = "Tarde";
+      else if (hour >= 19 || hour < 7) jornadaStr = "Noche";
+      
+      const folderId = await GoogleDriveService.getOrCreateDayJornadaFolder(year, month, dayStr, jornadaStr);
       
       const dateStr = now.toLocaleDateString().replace(/\//g, '-');
       const timeStr = `${now.getHours().toString().padStart(2, '0')}-${now.getMinutes().toString().padStart(2, '0')}`;
       
       const fileName = auto 
-        ? `Censo_${year}_${monthPrefix}_${now.getDate().toString().padStart(2, '0')}_${timeStr.replace('-', '')}.xlsx`
+        ? `Censo_${year}_${monthPrefix}_${dayStr}_${timeStr.replace('-', '')}.xlsx`
         : `CENSO_MANUAL_${filterSection === 'all' ? 'TOTAL' : filterSection.replace(/\//g, '-')}_${dateStr}_${timeStr}.xlsx`;
 
-      const spreadsheetId = await GoogleDriveService.findOrCreateSheet(fileName, monthFolderId);
+      const spreadsheetId = await GoogleDriveService.findOrCreateSheet(fileName, folderId);
       
       // Fetch fresh data from DB to avoid stale state issues (because onSnapshot is async)
       const q = query(collection(db, 'census'));
@@ -333,10 +342,9 @@ export function CensusView({ currentUser, isAdmin, isAuthenticated }: Props) {
     }
   };
 
-  const handleFinishHandover = async () => {
-    const shift = prompt("Indique el turno (M = Mañana, T = Tarde, N = Noche):")?.toLowerCase();
-    if (!shift || !['m', 't', 'n'].includes(shift)) {
-      alert("Turno cancelado.");
+  const executeHandover = async () => {
+    if (!handoverReceiver.trim()) {
+      alert("Para cerrar la entrega de turno debe indicar quién recibe.");
       return;
     }
 
@@ -346,8 +354,10 @@ export function CensusView({ currentUser, isAdmin, isAuthenticated }: Props) {
       const monthPrefix = (now.getMonth() + 1).toString().padStart(2, '0');
       const monthName = new Intl.DateTimeFormat('es', { month: 'long' }).format(now);
       const month = `${monthPrefix} - ${monthName.toUpperCase()}`; // e.g. "06 - JUNIO"
+      const day = now.getDate().toString().padStart(2, '0');
+      const jornadaStr = handoverShift === 'm' ? 'Mañana' : handoverShift === 't' ? 'Tarde' : 'Noche';
       
-      const driveFileName = `ENTREGA_${filterSection === 'all' ? 'TOTAL' : filterSection.replace(/\//g, '-')}_${shift.toUpperCase()}_${now.toLocaleDateString().replace(/\//g, '-')}`;
+      const driveFileName = `ENTREGA_${filterSection === 'all' ? 'TOTAL' : filterSection.replace(/\//g, '-')}_${jornadaStr}_${day}-${monthPrefix}-${year}`;
       const timeStr = `${now.getHours().toString().padStart(2, '0')}-${now.getMinutes().toString().padStart(2, '0')}`;
       const fileName = `${driveFileName}_${timeStr}.xlsx`;
       
@@ -355,13 +365,13 @@ export function CensusView({ currentUser, isAdmin, isAuthenticated }: Props) {
       try {
         setIsSyncing(true);
         // Sync to Drive
-        const monthFolderId = await GoogleDriveService.getOrCreateMonthFolder(year, month);
-        const spreadsheetId = await GoogleDriveService.findOrCreateSheet(fileName, monthFolderId);
+        const folderId = await GoogleDriveService.getOrCreateDayJornadaFolder(year, month, day, jornadaStr);
+        const spreadsheetId = await GoogleDriveService.findOrCreateSheet(fileName, folderId);
         
         const values = [
-          ['CAMA', 'PACIENTE', 'SECCION', 'DIAGNOSTICOS', 'MANEJO', 'PENDIENTES', 'ESPECIALIDAD', 'MEDICO', 'ACTUALIZADO'],
+          ['CAMA', 'PACIENTE', 'SECCION', 'DIAGNOSTICOS', 'MANEJO', 'PENDIENTES', 'ESPECIALIDAD', 'ENTREGA', 'RECIBE', 'ACTUALIZADO'],
           ...filteredPatients.map(p => [
-            p.bed, p.name, p.section, p.diagnoses, p.managementPlan, p.pendientes, p.specialty, p.updatedBy || '', new Date(p.updatedAt || Date.now()).toISOString()
+            p.bed, p.name, p.section, p.diagnoses, p.managementPlan, p.pendientes, p.specialty, currentUser?.nombre || 'N/A', handoverReceiver, new Date(p.updatedAt || Date.now()).toISOString()
           ])
         ];
         await GoogleDriveService.updateSheetValues(spreadsheetId, 'Sheet1!A1', values);
@@ -372,25 +382,40 @@ export function CensusView({ currentUser, isAdmin, isAuthenticated }: Props) {
         setIsSyncing(false);
       }
 
-      // 1. Log handover metrics (Removed per request to not record internally)
-      // await addDoc(collection(db, 'handovers'), { ... });
-
-      // 2. Format WhatsApp Summary optimized for mobile
+      // Format WhatsApp Summary optimized for mobile
       const summary = filteredPatients.map(p => 
         `🛏️ *Cama ${p.bed}*: ${p.name}\n📋 *IDX*: ${p.diagnoses.substring(0, 60)}...\n⚠️ *PDTE*: ${p.pendientes || 'Ninguno'}\n`
       ).join('\n');
       
-      const message = `🚨 *HDSA: ENTREGA DE TURNO [${shift.toUpperCase()}]*\n👨‍⚕️ *Dr(a):* ${currentUser?.nombre}\n🕒 *Hora:* ${now.toLocaleTimeString()}\n🏥 *Componente:* ${filterSection === 'all' ? 'CENSO TOTAL' : filterSection}\n👥 *Pacientes:* ${filteredPatients.length}\n\n*RESUMEN:*\n${summary}\n${driveLink ? `*🔗 Enlace Drive:* \n${driveLink}\n\n` : ''}_Reporte generado desde App Talento Humano_`;
+      const message = `🚨 *HDSA: ENTREGA DE TURNO [${jornadaStr.toUpperCase()}]*\n👨‍⚕️ *Entrega:* ${currentUser?.nombre}\n👩‍⚕️ *Recibe:* ${handoverReceiver}\n🕒 *Hora:* ${now.toLocaleTimeString()}\n🏥 *Componente:* ${filterSection === 'all' ? 'CENSO TOTAL' : filterSection}\n👥 *Pacientes:* ${filteredPatients.length}\n\n*RESUMEN:*\n${summary}\n${driveLink ? `*🔗 Enlace Drive:* \n${driveLink}\n\n` : ''}_Reporte generado desde App Talento Humano_`;
       
+      // Save Handover record to Firestore 
+      await addDoc(collection(db, 'census_handovers'), {
+         timestamp: Date.now(),
+         year: now.getFullYear(),
+         month: now.getMonth() + 1,
+         shift: handoverShift,
+         jornadaStr,
+         deliveredBy: currentUser?.nombre || 'Desconocido',
+         receivedBy: handoverReceiver,
+         section: filterSection,
+         patientCount: filteredPatients.length,
+         driveLink: driveLink || null
+      });
+
       const encodedMsg = encodeURIComponent(message);
       window.open(`https://wa.me/573173683886?text=${encodedMsg}`, '_blank');
       
-      // 3. Trigger Excel download with formal headers as backup
+      // Trigger Excel download with formal headers as backup
       exportToExcel(fileName);
       
-      alert(`Entrega finalizada.\n1. Se registró la métrica.\n2. Se preparó el resumen de WhatsApp.\n3. Se generó archivo local y enlace a Drive.`);
+      setShowHandoverModal(false);
+      setHandoverReceiver('');
+      
+      alert(`Entrega finalizada.\n1. Firma Digital Registrada y guardada en base de datos: Entrega ${currentUser?.nombre}, Recibe ${handoverReceiver}\n2. Se preparó el resumen de WhatsApp.\n3. Se generó archivo local y enlace a Drive.`);
     } catch (error) {
       console.error("Error finishing handover:", error);
+      alert("Error al finalizar entrega");
     }
   };
 
@@ -474,7 +499,7 @@ export function CensusView({ currentUser, isAdmin, isAuthenticated }: Props) {
               {isSyncing ? <RefreshCcw className="w-4 h-4 animate-spin" /> : <CloudDownload className="w-4 h-4 text-sky-400" />} Import Drive
             </button>
             <button 
-              onClick={handleFinishHandover}
+              onClick={() => setShowHandoverModal(true)}
               className="flex-1 md:flex-none bg-sky-500 text-white px-4 py-2.5 rounded-2xl font-black text-[10px] uppercase flex items-center justify-center gap-2 hover:bg-sky-400 transition-all shadow-lg"
             >
               <Share2 className="w-4 h-4" /> Entregar Turno
@@ -765,6 +790,70 @@ export function CensusView({ currentUser, isAdmin, isAuthenticated }: Props) {
                 className="flex-1 bg-white text-slate-400 p-5 rounded-3xl font-black uppercase text-xs border-2 border-slate-100 hover:bg-slate-200 hover:text-slate-600 transition-all"
               >
                 Descartar
+              </button>
+            </div>
+          </motion.div>
+        </div>
+      )}
+
+      {/* Handover Modal */}
+      {showHandoverModal && (
+        <div className="fixed inset-0 bg-slate-900/80 backdrop-blur-xl z-[200] flex items-center justify-center p-4">
+          <motion.div 
+            initial={{ scale: 0.95, opacity: 0 }} 
+            animate={{ scale: 1, opacity: 1 }}
+            className="bg-white w-full max-w-lg rounded-[40px] overflow-hidden shadow-2xl ring-1 ring-white/20"
+          >
+            <div className="bg-sky-600 p-8 text-white relative">
+              <div className="relative z-10 flex justify-between items-center text-center w-full">
+                <div className="flex-1 text-left">
+                   <h3 className="text-2xl font-black uppercase tracking-tight leading-none mb-1 flex items-center gap-3">
+                     <Share2 className="w-6 h-6" /> Entrega de Turno
+                   </h3>
+                   <p className="text-sky-100 text-xs font-bold uppercase tracking-widest">Firma Digital</p>
+                </div>
+                <button onClick={() => setShowHandoverModal(false)} className="bg-sky-800/50 p-2 rounded-xl border border-white/20 hover:bg-sky-900 transition-all">✕</button>
+              </div>
+            </div>
+            
+            <div className="p-8 bg-slate-50 space-y-6">
+               <div className="bg-white p-6 rounded-3xl border border-slate-200 shadow-sm space-y-4">
+                  <div>
+                    <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-2 mb-2 block">Médico que Entrega</label>
+                    <div className="bg-slate-100 p-4 rounded-2xl font-black text-slate-800 border border-slate-200">
+                      Dr(a). {currentUser?.nombre || 'Desconocido'}
+                    </div>
+                  </div>
+                  <div>
+                    <label className="text-[10px] font-black text-sky-500 uppercase tracking-widest ml-2 mb-2 block">Médico que Recibe (Firma)</label>
+                    <input 
+                      type="text" 
+                      placeholder="Nombre del médico..." 
+                      className="w-full bg-white border-2 border-sky-100 focus:border-sky-500 p-4 rounded-2xl font-black text-slate-800 outline-none transition-all placeholder:font-medium placeholder:text-slate-300"
+                      value={handoverReceiver}
+                      onChange={e => setHandoverReceiver(e.target.value)}
+                    />
+                  </div>
+               </div>
+
+               <div className="bg-white p-6 rounded-3xl border border-slate-200 shadow-sm">
+                  <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-2 mb-4 block">Jornada de Entrega</label>
+                  <div className="grid grid-cols-3 gap-2">
+                    <button onClick={() => setHandoverShift('m')} className={`p-4 rounded-2xl font-black text-xs uppercase transition-all ${handoverShift === 'm' ? 'bg-sky-500 text-white shadow-md shadow-sky-500/20' : 'bg-slate-50 text-slate-400 hover:bg-slate-100'}`}>Mañana</button>
+                    <button onClick={() => setHandoverShift('t')} className={`p-4 rounded-2xl font-black text-xs uppercase transition-all ${handoverShift === 't' ? 'bg-sky-500 text-white shadow-md shadow-sky-500/20' : 'bg-slate-50 text-slate-400 hover:bg-slate-100'}`}>Tarde</button>
+                    <button onClick={() => setHandoverShift('n')} className={`p-4 rounded-2xl font-black text-xs uppercase transition-all ${handoverShift === 'n' ? 'bg-slate-800 text-white shadow-md shadow-slate-800/20' : 'bg-slate-50 text-slate-400 hover:bg-slate-100'}`}>Noche</button>
+                  </div>
+               </div>
+            </div>
+
+            <div className="p-8 bg-slate-50 border-t border-slate-200 flex gap-4">
+              <button 
+                onClick={executeHandover}
+                disabled={!handoverReceiver.trim()}
+                className="flex-[2] bg-sky-600 text-white p-5 rounded-3xl font-black uppercase text-xs hover:bg-sky-500 active:scale-95 transition-all shadow-xl shadow-sky-600/20 disabled:opacity-50 flex justify-center items-center gap-2"
+              >
+                {isSyncing ? <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin"></div> : <Send className="w-4 h-4" />}
+                Confirmar y Entregar
               </button>
             </div>
           </motion.div>

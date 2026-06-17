@@ -89,22 +89,44 @@ export class GoogleDriveService {
    * Finds or creates a folder structure: censos -> Year -> Month.
    * Returns the Month folder ID.
    */
+  /**
+   * Finds or creates a folder structure: censos -> Year -> Month.
+   * Returns the Month folder ID.
+   */
   static async getOrCreateMonthFolder(year: string, month: string): Promise<string> {
     const rootFolderId = await this.getRootFolderId();
     
-    // 1. Find or create Year folder
+    // 1. Year
     let yearFolderId = await this.findByName(year, rootFolderId, 'application/vnd.google-apps.folder');
-    if (!yearFolderId) {
-      yearFolderId = await this.createFolder(year, rootFolderId);
-    }
+    if (!yearFolderId) yearFolderId = await this.createFolder(year, rootFolderId);
 
-    // 2. Find or create Month folder in Year folder
+    // 2. Month
     let monthFolderId = await this.findByName(month, yearFolderId, 'application/vnd.google-apps.folder');
-    if (!monthFolderId) {
-      monthFolderId = await this.createFolder(month, yearFolderId);
-    }
+    if (!monthFolderId) monthFolderId = await this.createFolder(month, yearFolderId);
 
     return monthFolderId;
+  }
+
+  static async getOrCreateDayJornadaFolder(year: string, month: string, day: string, jornada: string): Promise<string> {
+    const rootFolderId = await this.getRootFolderId();
+    
+    // 1. Year
+    let yearFolderId = await this.findByName(year, rootFolderId, 'application/vnd.google-apps.folder');
+    if (!yearFolderId) yearFolderId = await this.createFolder(year, rootFolderId);
+
+    // 2. Month
+    let monthFolderId = await this.findByName(month, yearFolderId, 'application/vnd.google-apps.folder');
+    if (!monthFolderId) monthFolderId = await this.createFolder(month, yearFolderId);
+
+    // 3. Day
+    let dayFolderId = await this.findByName(day, monthFolderId, 'application/vnd.google-apps.folder');
+    if (!dayFolderId) dayFolderId = await this.createFolder(day, monthFolderId);
+
+    // 4. Jornada (Mañana, Tarde, Noche)
+    let jornadaFolderId = await this.findByName(jornada, dayFolderId, 'application/vnd.google-apps.folder');
+    if (!jornadaFolderId) jornadaFolderId = await this.createFolder(jornada, dayFolderId);
+
+    return jornadaFolderId;
   }
 
   /**

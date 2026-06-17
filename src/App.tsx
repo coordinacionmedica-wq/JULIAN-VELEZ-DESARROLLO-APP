@@ -254,6 +254,20 @@ export default function App() {
   const [newLegendRole, setNewLegendRole] = useState('');
   const [newLegendContent, setNewLegendContent] = useState('');
   const [currentMonthData, setCurrentMonthData] = useState<MonthlyData>({});
+  const [history, setHistory] = useState<MonthlyData[]>([]);
+
+  const handleUndo = async () => {
+    if (history.length === 0) return;
+    setNotification({ message: "Deshaciendo última acción...", type: 'info' });
+    const previousState = history[history.length - 1];
+    setHistory(prev => prev.slice(0, -1));
+    setCurrentMonthData(previousState);
+    
+    // push changes to database
+    for (const [dIdStr, data] of Object.entries(previousState)) {
+      updateDoctorMonth(Number(dIdStr), data);
+    }
+  };
 
   const getVarHours = (slot: SlotType, sigla: string): number => {
     if (!sigla) return 0;
@@ -301,17 +315,6 @@ export default function App() {
       
       SOLICITUDES / RESTRICCIONES PREVIAS:
       ${monthRequests.map(r => `- Dr. ${r.doctorName} (ID ${r.doctorId}) pidió ${r.slot.toUpperCase()} el día ${r.day}: ${r.reason}`).join('\n')}
-      
-      REGLAS INSTITUCIONALES (SHIFT ENGINE V3):
-      1. Máximo noches consecutivas: ${settings.maxConsecutiveNights}
-      2. Descanso mínimo entre turnos: ${settings.minRestHoursBetweenShifts}h
-      3. Máximo turnos por mes por médico: ${settings.maxShiftsPerMonth}
-      4. Espaciado entre fines de semana: ${settings.weekendSpacingWeeks} semanas.
-      5. Mínimo fines de semana libres: ${settings.mandatoryFreeWeekends}
-      6. Priorizar Rurales para Disponibilidad (D1/D2/D3): ${settings.priorityRuralD1 ? 'SÍ' : 'NO'}
-      7. Bloquear Tripletes: ${settings.blockTriplets ? 'SÍ' : 'NO'}
-      8. Habilitar Descanso Post-Turno (PT): ${settings.enablePostShiftRest ? 'SÍ' : 'NO'}
-      ${settings.customRules ? `OTRAS REGLAS ESPECÍFICAS:\n${settings.customRules}` : ''}
       
       TAREA:
       Genera una PROPUESTA DE PROGRAMACIÓN lógica y optimizada.
@@ -673,11 +676,34 @@ export default function App() {
     // Global Settings (Variables)
     const unsubVars = onSnapshot(doc(db, 'settings', 'variables'), async (snap) => {
       let data: VarSlotConfig = { m: {}, t: {}, n: {} };
+      let neededCleanup = false;
       if (snap.exists() && Object.keys(snap.data() || {}).length > 0) {
         const cloudData = snap.data() as VarSlotConfig;
         (['m', 't', 'n'] as SlotType[]).forEach(slot => {
           if (cloudData[slot]) {
-            data[slot] = { ...cloudData[slot] };
+            // Cleanup phase: if 'm' and 'M' exist, prefer 'm' (lowercase or original).
+            // Here, we'll keep the first one we encounter but if a lowercase equivalent exists, keep the lowercase version and its value, drop the uppercase.
+            const cleanedSlot: Record<string, number> = {};
+            const keys = Object.keys(cloudData[slot]);
+            for (const k of keys) {
+               const kLower = k.toLowerCase();
+               if (!cleanedSlot[kLower] && !cleanedSlot[k.toUpperCase()] && !cleanedSlot[k]) {
+                  // Keep pure lowercase if a lowercase version exists somewhere in the keys.
+                  // Otherwise, keep the original casing.
+                  const wantsLower = keys.find(x => x === kLower);
+                  const selectedKey = wantsLower ? wantsLower : k;
+                  
+                  // if this was an uppercase key but a lowercase is found, let it be skipped because the lower one will process later.
+                  if (wantsLower && k !== wantsLower) {
+                     neededCleanup = true;
+                     continue; // let the lowercase iteration pick it up
+                  }
+                  cleanedSlot[selectedKey] = cloudData[slot][k];
+               } else if (cleanedSlot[k] === undefined) { // Duplicate case insensitive detected
+                 neededCleanup = true;
+               }
+            }
+            data[slot] = cleanedSlot;
           }
         });
       } else {
@@ -687,6 +713,9 @@ export default function App() {
         if (!data[slot]) data[slot] = {};
       });
       setVariables(data);
+      if (neededCleanup) {
+         setDoc(doc(db, 'settings', 'variables'), data).catch(console.error); // async fix DB
+      }
       
       const legSnap = await getDoc(doc(db, 'settings', 'legends'));
       if (legSnap.exists() && legSnap.data().list) {
@@ -898,6 +927,7 @@ export default function App() {
 
   const updateMonthlyData = async (newData: MonthlyData) => {
     const monthKey = `${selectedYear}_${selectedMonth}`;
+    setHistory(h => [...h.slice(-19), currentMonthData]);
     try {
       // In our current architecture, each doctor is a separate document
       // We'll write only the keys provided in newData to avoid excessive writes
@@ -1195,27 +1225,16 @@ export default function App() {
       }
       
       const prompt = `Eres un experto en gestión de turnos hospitalarios. Genera una propuesta de turnos para el periodo ${MONTH_NAMES[selectedMonth]} ${selectedYear}.
-Médicos disponibles (ordenados por importancia administrativa): ${JSON.stringify(doctorsList)}
+Médicos disponibles: ${JSON.stringify(doctorsList)}
 
-SOLICITUDES DE CAMBIO DE TURNO (MUY IMPORTANTE):
+SOLICITUDES DE CAMBIO DE TURNO:
 ${requestsText}
-Integra estas solicitudes en la malla en la medida de lo posible, especialmente si están 'approved' o 'pending'.
-
-REGLAS ESTRICTAS DE ASIGNACIÓN:
-1. Médicos Rurales (Primeros 5 médicos en la lista - Índices 1 al 5): Son los encargados de la disponibilidad crítica. Deben rotar las siglas 'D1', 'D2' y 'D3'.
-2. Siguientes 3 médicos (Índices 6 al 8): Pueden hacer disponibilidad pero SOLAMENTE 'D2' o 'D3'. NUNCA 'D1'.
-3. Médicos Categoría 'CTA' o de Contrato: Deben tener un fin de semana LIBRE (sábado y domingo completo sin turnos) cada 15 días (ej: libre fin de semana 1 y 3, o 2 y 4).
-4. Carga Equitativa de Noches: Los médicos de 'Planta' deben tener la misma cantidad de turnos de noche ('n') en el mes entre ellos, y esta cantidad debe ser balanceada con la de los médicos de 'CTA'.
-5. Reglas Generales de Seguridad:
-   - Evitar turnos dobles consecutivos.
-   - Máximo un turno por slot (m, t, n) por día.
-   - Si un médico tiene Noche ('n'), el día siguiente en la mañana ('m') debe ser 'PT' (Descanso Post-Turno).
-   - Respetar solicitudes previas si las hay (aunque no se listan aquí, intenta ser balanceado).
+Integra estas solicitudes en la malla en la medida de lo posible.
 
 SIGLAS DISPONIBLES:
-- Mañana (m): M, 10m, 11m, 12m, 13m, 14m, 15m, 16m, D1, PT, L (Libre)
-- Tarde (t): T, 10t, 11t, 12t, 13t, 14t, 15t, 16t, CX2, D2, PT, L (Libre)
-- Noche (n): N, 11-10n, 13n, 14n, 16n, 13-10-11n, 13n-16n, D3, PT, L (Libre)
+- Mañana (m): M, 10, 11, 12, 13, 14, 15, 16, D1, PT, L (Libre)
+- Tarde (t): T, 10, 11, 12, 13, 14, 15, 16, CX2, D2, PT, L (Libre)
+- Noche (n): N, 10, 11, 13, 14, 16, D3, PT, L (Libre)
 
 Responde ÚNICAMENTE con un objeto JSON (sin markdown, solo el objeto) con esta estructura:
 {
@@ -2031,7 +2050,28 @@ Donde doctorId es el ID numérico del médico y las llaves de los días son del 
           }
 
           if (!doctorId && medName) {
-            const found = doctors.find(d => d.nombre.toLowerCase().trim() === medName.toString().toLowerCase().trim());
+            const searchName = medName.toString().toLowerCase().trim();
+            const normalize = (s:string) => s.normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9\s]/g, '').replace(/\s+/g, ' ');
+            const nSearch = normalize(searchName);
+
+            let found = doctors.find(d => normalize(d.nombre.toLowerCase().trim()) === nSearch);
+            if (!found) {
+               found = doctors.find(d => {
+                  const nDb = normalize(d.nombre.toLowerCase());
+                  return nDb.includes(nSearch) || nSearch.includes(nDb);
+               });
+            }
+            if (!found) {
+               const searchWords = nSearch.split(' ').filter(w => w.length > 2);
+               found = doctors.find(d => {
+                  const nDb = normalize(d.nombre.toLowerCase());
+                  let matches = 0;
+                  for (const w of searchWords) {
+                     if (nDb.includes(w)) matches++;
+                  }
+                  return matches >= Math.min(2, searchWords.length);
+               });
+            }
             if (found) doctorId = found.id;
           }
 
@@ -2244,8 +2284,45 @@ Donde doctorId es el ID numérico del médico y las llaves de los días son del 
         await pushNotification(id, `📅 TURNERO PUBLICADO: Se ha publicado la programación de ${MONTH_NAMES[selectedMonth]} ${selectedYear}. Por favor revisa el turnero.`);
       }
       
+      // Auto sync to Drive
+      try {
+        const rootFolderId = await GoogleDriveService.getRootFolderId();
+        const exportFolderName = "Turneros_2026";
+        let exportFolderId = await GoogleDriveService.findSubfolder(exportFolderName, rootFolderId);
+        if (!exportFolderId) exportFolderId = await GoogleDriveService.getOrCreateMonthFolder("Turneros", "2026");
+        
+        const fileName = `Turnero_${MONTH_NAMES[selectedMonth]}_${selectedYear}.xlsx`;
+        const spreadsheetId = await GoogleDriveService.findOrCreateSheet(fileName, exportFolderId);
+        
+        // Prepare data
+        const data = getFilteredTurneroData();
+        const daysArr = Array.from({ length: daysInMonth }, (_, i) => (i + 1).toString());
+        const header = ["MÉDICO", "JORNADA", ...daysArr, "TOTAL"];
+        
+        const values = [header];
+        data.forEach(({ med, medTotalMonth }) => {
+          (['m', 't', 'n'] as SlotType[]).forEach((slot, sIdx) => {
+            const row: any[] = [
+              sIdx === 0 ? med.nombre : '',
+              slot === 'm' ? 'M' : slot === 't' ? 'T' : 'N'
+            ];
+            for (let d = 1; d <= daysInMonth; d++) {
+              const val = currentMonthData[med.id]?.[slot]?.[d] || 'X';
+              row.push(val.toUpperCase() !== 'X' ? (showGridHours ? `${val} (${getVarHours(slot, val)})` : val) : '');
+            }
+            row.push(sIdx === 0 ? medTotalMonth.toString() : '');
+            values.push(row);
+          });
+        });
+
+        await GoogleDriveService.updateSheetValues(spreadsheetId, 'Sheet1!A1', values);
+        console.log(`Synced to drive: ${fileName}`);
+      } catch (err) {
+        console.error("No se pudo sincronizar el turnero a Drive:", err);
+      }
+
       setNotification({ 
-        message: `¡Turnero publicado! Notificados ${docIdsWithShifts.length} funcionarios.`, 
+        message: `¡Turnero publicado y sincronizado! Notificados ${docIdsWithShifts.length} funcionarios.`, 
         type: 'success' 
       });
       setTimeout(() => setNotification(null), 4000);
@@ -2452,6 +2529,9 @@ Donde doctorId es el ID numérico del médico y las llaves de los días son del 
     }
 
     setCurrentMonthData(prev => {
+      // Guardar historial para Deshacer. Guardamos solo los ultimos 20 cambios por memoria.
+      setHistory(h => [...h.slice(-19), prev]);
+
       const cloned = { ...prev };
       const docUpdates: Record<number, any> = {};
 
@@ -2587,6 +2667,7 @@ Donde doctorId es el ID numérico del médico y las llaves de los días son del 
     if (session?.r !== 'admin') return;
 
     setCurrentMonthData(prev => {
+      setHistory(h => [...h.slice(-19), prev]);
       const docShifts = prev[doctorId] ? { 
         m: { ...prev[doctorId].m }, 
         t: { ...prev[doctorId].t }, 
@@ -4121,67 +4202,17 @@ Usa un tono directivo, formal y conciso en español. Solo usa negritas y viñeta
                  </div>
               </div>
 
-              {/* AI Shift Engine Panel */}
-              {(session.r === 'admin' || session.r === 'root') && (
-                <div className="bg-emerald-900 text-emerald-100 p-6 rounded-[32px] border border-emerald-800 shadow-xl no-print">
-                  <div className="flex flex-wrap items-center justify-between gap-4">
-                    <div className="flex items-center gap-4">
-                       <div className="p-3 bg-emerald-800 rounded-2xl text-emerald-400">
-                          <BrainCircuit className="w-6 h-6 animate-pulse" />
-                       </div>
-                       <div>
-                          <h3 className="font-black uppercase tracking-tight text-white">IA Shift Engine V2</h3>
-                          <p className="text-[10px] uppercase font-bold opacity-60">Generador de mallas automáticas bajo reglas institucionales</p>
-                       </div>
-                    </div>
-                    <div className="flex gap-2">
-                      {aiSuggestions ? (
-                        <>
-                          <button 
-                            onClick={() => setAiSuggestions(null)}
-                            className="bg-slate-800 text-white px-4 py-2.5 rounded-xl font-bold text-xs hover:bg-slate-700 transition-all border border-slate-700"
-                          >
-                            DESCARTAR
-                          </button>
-                          <button 
-                            onClick={applyAISuggestions}
-                            className="bg-emerald-500 text-white px-6 py-2.5 rounded-xl font-black text-xs hover:bg-emerald-400 transition-all shadow-lg shadow-emerald-500/20"
-                          >
-                            APLICAR MALLA GENERADA
-                          </button>
-                        </>
-                      ) : (
-                        <button 
-                          onClick={generateAISuggestions}
-                          disabled={isGeneratingAISuggestions}
-                          className="bg-white text-emerald-900 px-6 py-2.5 rounded-xl font-black text-xs hover:bg-emerald-50 transition-all shadow-lg shadow-white/10 disabled:opacity-50"
-                        >
-                          {isGeneratingAISuggestions ? (
-                            <span className="flex items-center gap-2">
-                              <Wand2 className="w-4 h-4 animate-spin" /> PROCESANDO...
-                            </span>
-                          ) : (
-                            <span className="flex items-center gap-2">
-                              <Sparkles className="w-4 h-4" /> GENERAR PROPUESTA MES
-                            </span>
-                          )}
-                        </button>
-                      )}
-                    </div>
-                  </div>
-                  
-                  {aiSuggestions && (
-                    <div className="mt-6 p-4 bg-emerald-950/50 rounded-2xl border border-emerald-800/50">
-                      <p className="text-[10px] font-bold text-emerald-400 mb-0 uppercase italic flex items-center gap-2">
-                        <Info className="w-3 h-3" /> Se ha generado una propuesta completa de turnos siguiendo las secuencias ordenadas. Revise los cambios antes de aplicar permanentemente.
-                      </p>
-                    </div>
-                  )}
-                </div>
-              )}
-
               {/* Selectors */}
               <div className="flex flex-wrap gap-4 items-center bg-white p-4 rounded-2xl border border-slate-200 no-print shadow-sm sticky top-0 z-[60]">
+                {aiSuggestions && (
+                  <div className="w-full bg-emerald-50 border border-emerald-200 p-4 rounded-xl flex items-center justify-between mb-2">
+                     <span className="text-sm font-bold text-emerald-800">Se han generado sugerencias (Draft IA)</span>
+                     <div className="flex gap-2">
+                       <button onClick={() => setAiSuggestions(null)} className="px-4 py-2 bg-slate-200 text-slate-700 rounded-lg text-xs font-bold">DESCARTAR</button>
+                       <button onClick={applyAISuggestions} className="px-4 py-2 bg-emerald-600 text-white rounded-lg text-xs font-bold">APLICAR SUGERENCIAS</button>
+                     </div>
+                  </div>
+                )}
                 <div className="flex-1 min-w-[200px]">
                    <label className="text-[10px] uppercase text-sky-600 ml-2 mb-1 block font-bold">Período de Nómina</label>
                    <div className="flex gap-2">
@@ -4418,7 +4449,24 @@ Usa un tono directivo, formal y conciso en español. Solo usa negritas y viñeta
                         onClick={publishTurnos}
                         className="bg-emerald-600 text-white px-4 py-2 rounded-lg font-black text-[10px] uppercase flex items-center gap-2 hover:scale-105 transition-transform shadow-md shadow-emerald-500/20"
                       >
-                        <CheckCircle className="w-4 h-4" /> Publicar Turnos ({daysInMonth} dias)
+                        <CheckCircle className="w-4 h-4" /> Publicar
+                      </button>
+                      <button 
+                        onClick={generateAISuggestions}
+                        disabled={isGeneratingAISuggestions}
+                        className="bg-emerald-800 text-emerald-100 px-4 py-2 rounded-lg font-black text-[10px] uppercase flex items-center gap-2 hover:bg-emerald-700 transition-all shadow-md disabled:opacity-50"
+                        title="IA SHIFT ENGINE V2"
+                      >
+                        {isGeneratingAISuggestions ? <Wand2 className="w-4 h-4 animate-spin" /> : <BrainCircuit className="w-4 h-4" />}
+                        IA DRAFT
+                      </button>
+                      <button 
+                        onClick={handleUndo}
+                        disabled={history.length === 0}
+                        className="bg-amber-100 text-amber-700 px-4 py-2 rounded-lg font-black text-[10px] uppercase flex items-center gap-2 hover:bg-amber-200 transition-all shadow-sm disabled:opacity-50"
+                        title="Deshacer última acción"
+                      >
+                        Deshacer
                       </button>
                     </div>
                   )}
@@ -5206,6 +5254,13 @@ Usa un tono directivo, formal y conciso en español. Solo usa negritas y viñeta
                         </div>
                       </div>
 
+                      {ruralCallDate && ruralCallTime && ruralEndDate && ruralEndTime && new Date(`${ruralEndDate}T${ruralEndTime}`).getTime() > new Date(`${ruralCallDate}T${ruralCallTime}`).getTime() && (
+                        <div className="mt-6 bg-sky-50 text-sky-800 p-4 rounded-2xl border border-sky-100 flex w-full items-center justify-between font-black shadow-sm">
+                          <span className="uppercase text-xs tracking-widest text-sky-600">Total de horas bruto estimado:</span>
+                          <span className="text-2xl">{((new Date(`${ruralEndDate}T${ruralEndTime}`).getTime() - new Date(`${ruralCallDate}T${ruralCallTime}`).getTime()) / (1000 * 60 * 60)).toFixed(1)}h</span>
+                        </div>
+                      )}
+
                       <button 
                         onClick={submitRuralAvailability}
                         className="w-full mt-8 bg-emerald-600 text-white font-black h-16 rounded-2xl hover:scale-[1.02] active:scale-[0.98] transition-all flex items-center justify-center gap-3 shadow-lg shadow-emerald-500/20"
@@ -5617,8 +5672,9 @@ Usa un tono directivo, formal y conciso en español. Solo usa negritas y viñeta
                                   if (sName.includes('noche') || sName.includes('noc')) defaultSlot = 'n';
 
                                   for (const row of sData as any) {
-                                    const sigla = String(row.Sigla || row.sigla || '').trim();
-                                    if (!sigla) continue;
+                                    const siglaOriginal = String(row.Sigla || row.sigla || '').trim();
+                                    const siglaLower = siglaOriginal.toLowerCase();
+                                    if (!siglaLower) continue;
 
                                     const jornadaRaw = String(row.Jornada_m_t_n || row.jornada || row.Jornada || '').toLowerCase();
                                     let jornada: SlotType;
@@ -5628,8 +5684,18 @@ Usa un tono directivo, formal y conciso en español. Solo usa negritas y viñeta
                                     else if (defaultSlot) jornada = defaultSlot;
                                     else jornada = 'm';
 
-                                    const horas = Number(row.Horas_Carga || row.horas || row.horas_carga || 6);
-                                    newVars[jornada][sigla] = horas;
+                                    const rawHoras = row.Horas_Carga || row.horas || row.horas_carga;
+                                    const horas = rawHoras !== undefined && rawHoras !== null ? Number(rawHoras) : 6;
+                                    
+                                    // Deduplicate existing keys case-insensitively. Keep existing values to fix them up, but we overwrite them with the new import value (except zeros).
+                                    // Wait, the prompt says "si importo siglas no se pueden borrar las anteriores , deben corregir las malas de la base de datos ( actualizarlas) o copiar las nuevas"
+                                    let finalSigla = siglaOriginal;
+                                    for (const k of Object.keys(newVars[jornada])) {
+                                      if (k.toLowerCase() === siglaLower) {
+                                        delete newVars[jornada][k];
+                                      }
+                                    }
+                                    newVars[jornada][finalSigla] = isNaN(horas) ? 0 : horas;
                                     updatedCount++;
                                   }
                                 }
