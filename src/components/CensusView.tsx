@@ -3,7 +3,7 @@ import {
   Users, Plus, Search, Filter, ClipboardList, Clock, 
   Trash2, Edit3, CheckCircle2, AlertCircle, Share2, 
   FileSpreadsheet, MessageSquare, ArrowRight, UserPlus,
-  RefreshCcw, Cloud, CloudDownload
+  RefreshCcw, Cloud, CloudDownload, Send
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { collection, query, onSnapshot, addDoc, updateDoc, deleteDoc, doc, serverTimestamp, getDocs, where, setDoc } from 'firebase/firestore';
@@ -39,6 +39,7 @@ interface Props {
   currentUser: Doctor | null;
   isAdmin: boolean;
   isAuthenticated: boolean;
+  doctors: Doctor[];
 }
 
 const SECTIONS = [
@@ -47,7 +48,7 @@ const SECTIONS = [
   "URGENCIAS/PARTOS/CIRUGIA"
 ];
 
-export function CensusView({ currentUser, isAdmin, isAuthenticated }: Props) {
+export function CensusView({ currentUser, isAdmin, isAuthenticated, doctors }: Props) {
   const [patients, setPatients] = useState<Patient[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
@@ -59,6 +60,7 @@ export function CensusView({ currentUser, isAdmin, isAuthenticated }: Props) {
   const [showHandoverModal, setShowHandoverModal] = useState(false);
   const [handoverShift, setHandoverShift] = useState<'m' | 't' | 'n'>('m');
   const [handoverReceiver, setHandoverReceiver] = useState('');
+  const [handoverSender, setHandoverSender] = useState('');
   const [driveFiles, setDriveFiles] = useState<{ id: string, name: string, webViewLink: string, createdTime?: string }[]>([]);
   const [driveYear, setDriveYear] = useState(new Date().getFullYear().toString());
   const [driveMonth, setDriveMonth] = useState((new Date().getMonth() + 1).toString().padStart(2, '0'));
@@ -96,17 +98,8 @@ export function CensusView({ currentUser, isAdmin, isAuthenticated }: Props) {
   const fetchDriveFiles = async (year: string, monthPrefix: string) => {
     try {
       setLoading(true);
-      const months = ["ENERO", "FEBRERO", "MARZO", "ABRIL", "MAYO", "JUNIO", "JULIO", "AGOSTO", "SEPTIEMBRE", "OCTUBRE", "NOVIEMBRE", "DICIEMBRE"];
-      const monthName = months[parseInt(monthPrefix, 10) - 1];
-      const monthFolderName = `${monthPrefix} - ${monthName}`;
-      
-      const folderId = await GoogleDriveService.findMonthFolder(year, monthFolderName);
-      if (folderId) {
-        const files = await GoogleDriveService.listFilesInFolder(folderId);
-        setDriveFiles(files);
-      } else {
-        setDriveFiles([]);
-      }
+      const files = await GoogleDriveService.listMonthCensusFiles(year, monthPrefix);
+      setDriveFiles(files || []);
       setShowDriveFiles(true);
     } catch (err: any) {
       alert(`Error al obtener archivos de Drive: ${err.message}`);
@@ -120,7 +113,7 @@ export function CensusView({ currentUser, isAdmin, isAuthenticated }: Props) {
     
     setIsImporting(true);
     try {
-      const rows = await GoogleDriveService.getSheetValues(fileId, 'Sheet1!A2:I');
+      const rows = await GoogleDriveService.getSheetValues(fileId, 'Sheet1!A2:K');
       if (!rows || rows.length === 0) {
         alert("El archivo base está vacío o no tiene el formato correcto.");
         return;
@@ -132,7 +125,30 @@ export function CensusView({ currentUser, isAdmin, isAuthenticated }: Props) {
 
       for (const row of rows) {
         if (row.length < 2) continue; // Skip empty
-        const [bed, name, section, diagnoses, managementPlan, pendientes, specialty, medico, actualizadoStr] = row;
+        
+        const bed = row[0] || '';
+        const name = row[1] || '';
+        const section = row[2] || '';
+        const diagnoses = row[3] || '';
+        const managementPlan = row[4] || '';
+        const pendientes = row[5] || '';
+        const specialty = row[6] || '';
+        
+        let entrega = '';
+        let recibe = '';
+        let actualizadoStr = '';
+        
+        // Handling both old format (9 columns) and new format (10 columns)
+        if (row.length >= 10) {
+           entrega = row[7] || '';
+           recibe = row[8] || '';
+           actualizadoStr = row[9] || '';
+        } else {
+           entrega = row[7] || '';
+           actualizadoStr = row[8] || '';
+        }
+        
+        const medico = entrega || recibe || currentUser?.nombre || 'Importación Drive';
         
         // Find existing patient
         const existing = patients.find(p => p.bed === bed && p.name.toLowerCase() === name.toLowerCase());
@@ -158,7 +174,7 @@ export function CensusView({ currentUser, isAdmin, isAuthenticated }: Props) {
               pendientes: pendientes || existing.pendientes,
               specialty: specialty || existing.specialty,
               updatedAt: sheetDate,
-              updatedBy: medico || currentUser?.nombre || 'Importación Drive'
+              updatedBy: medico
             });
             updatedCount++;
           } else {
@@ -177,7 +193,7 @@ export function CensusView({ currentUser, isAdmin, isAuthenticated }: Props) {
             entryDate: new Date().toISOString().split('T')[0],
             age: '', eps: '', paraclinicals: '',
             updatedAt: sheetDate,
-            updatedBy: medico || currentUser?.nombre || 'Importación Drive'
+            updatedBy: medico
           });
           importedCount++;
         }
@@ -343,8 +359,8 @@ export function CensusView({ currentUser, isAdmin, isAuthenticated }: Props) {
   };
 
   const executeHandover = async () => {
-    if (!handoverReceiver.trim()) {
-      alert("Para cerrar la entrega de turno debe indicar quién recibe.");
+    if (!handoverReceiver.trim() || !handoverSender.trim()) {
+      alert("Para cerrar la entrega de turno debe indicar quién entrega y quién recibe.");
       return;
     }
 
@@ -371,7 +387,7 @@ export function CensusView({ currentUser, isAdmin, isAuthenticated }: Props) {
         const values = [
           ['CAMA', 'PACIENTE', 'SECCION', 'DIAGNOSTICOS', 'MANEJO', 'PENDIENTES', 'ESPECIALIDAD', 'ENTREGA', 'RECIBE', 'ACTUALIZADO'],
           ...filteredPatients.map(p => [
-            p.bed, p.name, p.section, p.diagnoses, p.managementPlan, p.pendientes, p.specialty, currentUser?.nombre || 'N/A', handoverReceiver, new Date(p.updatedAt || Date.now()).toISOString()
+            p.bed, p.name, p.section, p.diagnoses, p.managementPlan, p.pendientes, p.specialty, handoverSender || 'N/A', handoverReceiver, new Date(p.updatedAt || Date.now()).toISOString()
           ])
         ];
         await GoogleDriveService.updateSheetValues(spreadsheetId, 'Sheet1!A1', values);
@@ -387,7 +403,7 @@ export function CensusView({ currentUser, isAdmin, isAuthenticated }: Props) {
         `🛏️ *Cama ${p.bed}*: ${p.name}\n📋 *IDX*: ${p.diagnoses.substring(0, 60)}...\n⚠️ *PDTE*: ${p.pendientes || 'Ninguno'}\n`
       ).join('\n');
       
-      const message = `🚨 *HDSA: ENTREGA DE TURNO [${jornadaStr.toUpperCase()}]*\n👨‍⚕️ *Entrega:* ${currentUser?.nombre}\n👩‍⚕️ *Recibe:* ${handoverReceiver}\n🕒 *Hora:* ${now.toLocaleTimeString()}\n🏥 *Componente:* ${filterSection === 'all' ? 'CENSO TOTAL' : filterSection}\n👥 *Pacientes:* ${filteredPatients.length}\n\n*RESUMEN:*\n${summary}\n${driveLink ? `*🔗 Enlace Drive:* \n${driveLink}\n\n` : ''}_Reporte generado desde App Talento Humano_`;
+      const message = `🚨 *HDSA: ENTREGA DE TURNO [${jornadaStr.toUpperCase()}]*\n👨‍⚕️ *Entrega:* ${handoverSender}\n👩‍⚕️ *Recibe:* ${handoverReceiver}\n🕒 *Hora:* ${now.toLocaleTimeString()}\n🏥 *Componente:* ${filterSection === 'all' ? 'CENSO TOTAL' : filterSection}\n👥 *Pacientes:* ${filteredPatients.length}\n\n*RESUMEN:*\n${summary}\n${driveLink ? `*🔗 Enlace Drive:* \n${driveLink}\n\n` : ''}_Reporte generado desde App Talento Humano_`;
       
       // Save Handover record to Firestore 
       await addDoc(collection(db, 'census_handovers'), {
@@ -396,7 +412,7 @@ export function CensusView({ currentUser, isAdmin, isAuthenticated }: Props) {
          month: now.getMonth() + 1,
          shift: handoverShift,
          jornadaStr,
-         deliveredBy: currentUser?.nombre || 'Desconocido',
+         deliveredBy: handoverSender || 'Desconocido',
          receivedBy: handoverReceiver,
          section: filterSection,
          patientCount: filteredPatients.length,
@@ -411,8 +427,9 @@ export function CensusView({ currentUser, isAdmin, isAuthenticated }: Props) {
       
       setShowHandoverModal(false);
       setHandoverReceiver('');
+      setHandoverSender('');
       
-      alert(`Entrega finalizada.\n1. Firma Digital Registrada y guardada en base de datos: Entrega ${currentUser?.nombre}, Recibe ${handoverReceiver}\n2. Se preparó el resumen de WhatsApp.\n3. Se generó archivo local y enlace a Drive.`);
+      alert(`Entrega finalizada.\n1. Firma Digital Registrada y guardada en base de datos: Entrega ${handoverSender}, Recibe ${handoverReceiver}\n2. Se preparó el resumen de WhatsApp.\n3. Se generó archivo local y enlace a Drive.`);
     } catch (error) {
       console.error("Error finishing handover:", error);
       alert("Error al finalizar entrega");
@@ -499,7 +516,10 @@ export function CensusView({ currentUser, isAdmin, isAuthenticated }: Props) {
               {isSyncing ? <RefreshCcw className="w-4 h-4 animate-spin" /> : <CloudDownload className="w-4 h-4 text-sky-400" />} Import Drive
             </button>
             <button 
-              onClick={() => setShowHandoverModal(true)}
+              onClick={() => {
+                setHandoverSender(currentUser?.nombre || '');
+                setShowHandoverModal(true);
+              }}
               className="flex-1 md:flex-none bg-sky-500 text-white px-4 py-2.5 rounded-2xl font-black text-[10px] uppercase flex items-center justify-center gap-2 hover:bg-sky-400 transition-all shadow-lg"
             >
               <Share2 className="w-4 h-4" /> Entregar Turno
@@ -820,19 +840,30 @@ export function CensusView({ currentUser, isAdmin, isAuthenticated }: Props) {
                <div className="bg-white p-6 rounded-3xl border border-slate-200 shadow-sm space-y-4">
                   <div>
                     <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-2 mb-2 block">Médico que Entrega</label>
-                    <div className="bg-slate-100 p-4 rounded-2xl font-black text-slate-800 border border-slate-200">
-                      Dr(a). {currentUser?.nombre || 'Desconocido'}
-                    </div>
+                    <input 
+                      type="text" 
+                      list="doctors-list"
+                      placeholder="Quien entrega..." 
+                      className="w-full bg-slate-100 border border-slate-200 focus:border-slate-400 p-4 rounded-2xl font-black text-slate-800 outline-none transition-all placeholder:font-medium placeholder:text-slate-400"
+                      value={handoverSender}
+                      onChange={e => setHandoverSender(e.target.value)}
+                    />
                   </div>
                   <div>
                     <label className="text-[10px] font-black text-sky-500 uppercase tracking-widest ml-2 mb-2 block">Médico que Recibe (Firma)</label>
                     <input 
                       type="text" 
+                      list="doctors-list"
                       placeholder="Nombre del médico..." 
                       className="w-full bg-white border-2 border-sky-100 focus:border-sky-500 p-4 rounded-2xl font-black text-slate-800 outline-none transition-all placeholder:font-medium placeholder:text-slate-300"
                       value={handoverReceiver}
                       onChange={e => setHandoverReceiver(e.target.value)}
                     />
+                    <datalist id="doctors-list">
+                      {doctors?.map(d => (
+                        <option key={d.id} value={d.nombre} />
+                      ))}
+                    </datalist>
                   </div>
                </div>
 
@@ -849,7 +880,7 @@ export function CensusView({ currentUser, isAdmin, isAuthenticated }: Props) {
             <div className="p-8 bg-slate-50 border-t border-slate-200 flex gap-4">
               <button 
                 onClick={executeHandover}
-                disabled={!handoverReceiver.trim()}
+                disabled={!handoverReceiver.trim() || !handoverSender.trim()}
                 className="flex-[2] bg-sky-600 text-white p-5 rounded-3xl font-black uppercase text-xs hover:bg-sky-500 active:scale-95 transition-all shadow-xl shadow-sky-600/20 disabled:opacity-50 flex justify-center items-center gap-2"
               >
                 {isSyncing ? <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin"></div> : <Send className="w-4 h-4" />}

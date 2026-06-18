@@ -5571,6 +5571,7 @@ Usa un tono directivo, formal y conciso en español. Solo usa negritas y viñeta
                 currentUser={currentUserProfile} 
                 isAdmin={session?.r === 'admin'} 
                 isAuthenticated={!!fbUser}
+                doctors={doctors}
               />
             </motion.div>
           )}

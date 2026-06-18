@@ -160,7 +160,7 @@ export class GoogleDriveService {
    * Helper to query files with advanced search
    */
   private static async queryFiles(query: string): Promise<any[]> {
-    const searchUrl = `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(query)}&orderBy=modifiedTime desc&pageSize=50&fields=files(id, name, webViewLink, createdTime, modifiedTime)&supportsAllDrives=true&includeItemsFromAllDrives=true`;
+    const searchUrl = `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(query)}&orderBy=modifiedTime desc&pageSize=100&fields=files(id, name, webViewLink, createdTime, modifiedTime)&supportsAllDrives=true&includeItemsFromAllDrives=true`;
     const searchResult = await this.fetchWithAuth(searchUrl);
     return searchResult.files || [];
   }
@@ -204,6 +204,37 @@ export class GoogleDriveService {
     const url = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${range}`;
     const result = await this.fetchWithAuth(url);
     return result.values || [];
+  }
+
+  static async listMonthCensusFiles(year: string, monthPrefix: string): Promise<{ id: string, name: string, webViewLink: string, createdTime?: string }[]> {
+    const query = `(mimeType='application/vnd.google-apps.spreadsheet' or mimeType='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet') and trashed=false`;
+    const searchResult = await this.queryFiles(query);
+    
+    const parsedMonth = parseInt(monthPrefix, 10) - 1;
+    
+    return searchResult.filter((f: any) => {
+      // 1. If created or modified in the selected year and month, allow it.
+      if (f.createdTime) {
+         const d = new Date(f.createdTime);
+         if (d.getFullYear().toString() === year && d.getMonth() === parsedMonth) {
+           return true;
+         }
+      }
+      if (f.modifiedTime) {
+         const d = new Date(f.modifiedTime);
+         if (d.getFullYear().toString() === year && d.getMonth() === parsedMonth) {
+           return true;
+         }
+      }
+      
+      // 2. Or if the filename contains the year and month
+      const u = f.name.toUpperCase();
+      if (u.includes(year) && u.includes(monthPrefix)) {
+        return true;
+      }
+      
+      return false; // otherwise exclude to avoid clutter
+    });
   }
 
   /**
