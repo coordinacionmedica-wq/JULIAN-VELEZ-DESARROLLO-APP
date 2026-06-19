@@ -2,12 +2,12 @@ import express from "express";
 import path from "path";
 import { fileURLToPath } from "url";
 import { createServer as createViteServer } from "vite";
-import nodemailer from "nodemailer";
 import dotenv from "dotenv";
 import { initializeApp } from "firebase-admin/app";
 import { getFirestore } from "firebase-admin/firestore";
 import { getAuth } from "firebase-admin/auth";
 import fs from "fs";
+import nodemailer from "nodemailer";
 
 dotenv.config();
 
@@ -24,7 +24,6 @@ if (fs.existsSync(configPath)) {
     const appInfo = initializeApp({
       projectId: firebaseConfig.projectId
     });
-    // Use the specific database ID if provided in the config
     dbAdmin = firebaseConfig.firestoreDatabaseId 
       ? getFirestore(appInfo, firebaseConfig.firestoreDatabaseId)
       : getFirestore(appInfo);
@@ -33,16 +32,81 @@ if (fs.existsSync(configPath)) {
   }
 }
 
+// ============================================
+// EMAIL SERVICE CON POOLING (OPTIMIZADO)
+// ============================================
+class EmailServiceOptimized {
+  private transporter: nodemailer.Transporter | null = null;
+
+  private initTransporter(): nodemailer.Transporter {
+    if (this.transporter) return this.transporter;
+
+    const host = process.env.SMTP_HOST;
+    const user = process.env.SMTP_USER;
+    const pass = process.env.SMTP_PASS;
+    const port = process.env.SMTP_PORT || "587";
+
+    if (!host || !user || !pass) {
+      throw new Error("SMTP credentials not configured");
+    }
+
+    this.transporter = nodemailer.createTransport({
+      host,
+      port: parseInt(port),
+      secure: process.env.SMTP_SECURE === "true",
+      auth: { user, pass },
+      pool: {
+        maxConnections: 5,
+        maxMessages: 100,
+        rateDelta: 1000,
+        rateLimit: 5,
+      },
+    });
+
+    return this.transporter;
+  }
+
+  async sendEmail(to: string, subject: string, text: string, html?: string) {
+    try {
+      const transporter = this.initTransporter();
+      const info = await transporter.sendMail({
+        from: `"${process.env.SMTP_FROM_NAME || 'ESE Roldanillo'}" <${process.env.SMTP_FROM_EMAIL || process.env.SMTP_USER}>`,
+        to,
+        subject,
+        text,
+        html,
+      });
+      return { success: true, messageId: info.messageId };
+    } catch (error) {
+      console.error("Error sending email:", error);
+      throw error;
+    }
+  }
+
+  async close() {
+    if (this.transporter) {
+      await this.transporter.close();
+      this.transporter = null;
+    }
+  }
+}
+
+const emailService = new EmailServiceOptimized();
+
 async function startServer() {
   const app = express();
   const PORT = 3000;
 
   app.use(express.json());
 
-  // API Route for Self-Registration
+  // ============================================
+  // API ROUTES
+  // ============================================
+
+  // Register Doctor
   app.post("/api/register-doctor", async (req, res) => {
     if (!dbAdmin) {
-      return res.status(500).json({ success: false, error: "Database not initialized on server" });
+      return res.status(500).json({ success: false, error: "Database not initialized" });
     }
 
     const { doctorId, doctorData, isUpdate } = req.body;
@@ -51,7 +115,6 @@ async function startServer() {
       const docRef = dbAdmin.collection("doctors").doc(doctorId.toString());
       
       if (isUpdate) {
-        // Double check it doesn't already have a username to prevent spoofing
         const existingDoc = await docRef.get();
         if (existingDoc.exists && existingDoc.data().username) {
           return res.status(400).json({ success: false, error: "La cuenta ya está activada" });
@@ -61,27 +124,28 @@ async function startServer() {
         await docRef.set(doctorData);
       }
 
-      // Generate Custom Token for Firebase Auth
       const customToken = await getAuth().createCustomToken(doctorId.toString());
-
       res.json({ success: true, customToken });
     } catch (error) {
-      console.error("Error in server-side registration:", error);
+      console.error("Error in registration:", error);
       res.status(500).json({ success: false, error: (error as Error).message });
     }
   });
 
-  // API Route to verify if a doctor exists by cedula
+  // Check Doctor by Cedula
   app.post("/api/check-doctor", async (req, res) => {
     if (!dbAdmin) {
       return res.status(500).json({ success: false, error: "Database not initialized" });
     }
+
     const { cedula } = req.body;
+
     try {
       const q = await dbAdmin.collection("doctors").where("cedula", "==", cedula).get();
       if (q.empty) {
         return res.json({ success: true, exists: false });
       }
+
       const data = q.docs[0].data();
       res.json({ 
         success: true, 
@@ -95,17 +159,19 @@ async function startServer() {
     }
   });
 
-  // API Route for Doctor Login
+  // Doctor Login
   app.post("/api/login", async (req, res) => {
     if (!dbAdmin) {
-      return res.status(500).json({ success: false, error: "Database not initialized on server" });
+      return res.status(500).json({ success: false, error: "Database not initialized" });
     }
 
     const { u, p } = req.body;
 
     try {
-      const doctorsRef = dbAdmin.collection("doctors");
-      const q = await doctorsRef.where("username", "==", u).where("password", "==", p).get();
+      const q = await dbAdmin.collection("doctors")
+        .where("username", "==", u)
+        .where("password", "==", p)
+        .get();
 
       if (q.empty) {
         return res.json({ success: false, error: "Credenciales incorrectas" });
@@ -118,9 +184,7 @@ async function startServer() {
         return res.json({ success: false, error: "Usuario inactivo" });
       }
 
-      const doctorId = data.id.toString();
-      const customToken = await getAuth().createCustomToken(doctorId);
-
+      const customToken = await getAuth().createCustomToken(data.id.toString());
       res.json({
         success: true,
         customToken,
@@ -132,52 +196,25 @@ async function startServer() {
         passwordLastChanged: data.passwordLastChanged
       });
     } catch (error) {
-      console.error("Error in server-side login:", error);
+      console.error("Error in login:", error);
       res.status(500).json({ success: false, error: (error as Error).message });
     }
   });
 
-  // API Route for sending emails
+  // Send Email (OPTIMIZADO CON POOLING)
   app.post("/api/send-email", async (req, res) => {
     const { to, subject, text, html } = req.body;
 
-    const host = process.env.SMTP_HOST;
-    const user = process.env.SMTP_USER;
-    const pass = process.env.SMTP_PASS;
-
-    if (!host || !user || !pass) {
-      console.warn("SMTP credentials not configured. Email NOT sent.");
-      return res.status(200).json({ success: false, message: "SMTP not configured" });
-    }
-
     try {
-      const transporter = nodemailer.createTransport({
-        host: host,
-        port: parseInt(process.env.SMTP_PORT || "587"),
-        secure: process.env.SMTP_SECURE === "true", // true for 465, false for other ports
-        auth: {
-          user: user,
-          pass: pass,
-        },
-      });
-
-      const info = await transporter.sendMail({
-        from: `"${process.env.SMTP_FROM_NAME || 'ESE Roldanillo'}" <${process.env.SMTP_FROM_EMAIL || user}>`,
-        to,
-        subject,
-        text,
-        html,
-      });
-
-      console.log("Message sent: %s", info.messageId);
-      res.json({ success: true, messageId: info.messageId });
+      const result = await emailService.sendEmail(to, subject, text, html);
+      res.json({ success: true, messageId: result.messageId });
     } catch (error) {
       console.error("Error sending email:", error);
       res.status(500).json({ success: false, error: (error as Error).message });
     }
   });
 
-  // Vite middleware for development
+  // Vite middleware
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({
       server: { middlewareMode: true },
@@ -192,9 +229,23 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, "0.0.0.0", () => {
-    console.log(`Server running on http://localhost:${PORT}`);
+  const server = app.listen(PORT, "0.0.0.0", () => {
+    console.log(`✓ Server running on http://localhost:${PORT}`);
+    console.log(`✓ Email service optimized with connection pooling`);
+  });
+
+  // Graceful shutdown
+  process.on("SIGTERM", async () => {
+    console.log("SIGTERM received, closing server...");
+    await emailService.close();
+    server.close(() => {
+      console.log("Server closed");
+      process.exit(0);
+    });
   });
 }
 
-startServer();
+startServer().catch(err => {
+  console.error("Failed to start server:", err);
+  process.exit(1);
+});
