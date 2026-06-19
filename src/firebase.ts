@@ -6,7 +6,7 @@ import config from '../firebase-applet-config.json';
 export const firebaseConfig = config;
 
 const app = initializeApp(config);
-export const db = getFirestore(app, config.firestoreDatabaseId);
+export const db = getFirestore(app, (config as any).firestoreDatabaseId);
 export const auth = getAuth(app);
 
 // Enable Offline Persistence

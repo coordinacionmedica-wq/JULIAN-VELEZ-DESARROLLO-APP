@@ -36,6 +36,58 @@ export const AdminToolbox: React.FC<AdminToolboxProps> = ({
   selectedMonth,
   selectedYear
 }) => {
+  const getFuzzyMatchDoctor = (rowNameOrId: string, doctorsList: Doctor[]): Doctor | null => {
+    if (!rowNameOrId) return null;
+    const numId = Number(rowNameOrId);
+    if (!isNaN(numId)) {
+      const found = doctorsList.find(d => d.id === numId);
+      if (found) return found;
+    }
+    
+    const clean = (s: string) => {
+      return s.normalize("NFD")
+              .replace(/[\u0300-\u036f]/g, "")
+              .toLowerCase()
+              .replace(/[^a-z0-9 ]/g, "")
+              .trim();
+    };
+    
+    const targetClean = clean(rowNameOrId);
+    if (!targetClean) return null;
+    
+    for (const d of doctorsList) {
+      const docFull = clean(`${d.nombre} ${d.apellidos || ''}`);
+      const docNameOnly = clean(d.nombre);
+      if (docFull === targetClean || docNameOnly === targetClean) {
+        return d;
+      }
+    }
+
+    let bestDoctor: Doctor | null = null;
+    let highestScore = 0;
+
+    for (const d of doctorsList) {
+      const docFull = clean(`${d.nombre} ${d.apellidos || ''}`);
+      
+      const tokensTarget = targetClean.split(/\s+/);
+      const tokensDoc = docFull.split(/\s+/);
+      
+      let matchedTokens = 0;
+      tokensTarget.forEach(t => {
+        if (tokensDoc.some(td => td.includes(t) || t.includes(td))) {
+          matchedTokens++;
+        }
+      });
+      
+      const score = matchedTokens / Math.max(tokensTarget.length, tokensDoc.length);
+      if (score > highestScore && score >= 0.4) {
+        highestScore = score;
+        bestDoctor = d;
+      }
+    }
+    return bestDoctor;
+  };
+
   const [aiSettings, setAiSettings] = useState<AIEngineSettings>({
     maxConsecutiveNights: 1,
     minRestHoursBetweenShifts: 12,
@@ -255,8 +307,8 @@ export const AdminToolbox: React.FC<AdminToolboxProps> = ({
             if (sName.includes('noche') || sName.includes('noc')) defaultSlot = 'n';
 
             for (const row of sData as any[]) {
-              const sigla = String(row.Sigla || row.sigla || '').trim();
-              if (!sigla) continue;
+              const siglaOriginal = String(row.Sigla || row.sigla || '').trim();
+              if (!siglaOriginal) continue;
 
               const jornadaRaw = String(row.Jornada_m_t_n || row.jornada || row.Jornada || '').toLowerCase();
               let jornada: SlotType;
@@ -266,9 +318,15 @@ export const AdminToolbox: React.FC<AdminToolboxProps> = ({
               else if (defaultSlot) jornada = defaultSlot;
               else jornada = 'm';
 
-              const horas = Number(row.Horas_Carga || row.horas || row.horas_carga || 6);
-              newVars[jornada][sigla] = horas;
-              updatedCount++;
+              const rawHoras = row.Horas_Carga !== undefined && row.Horas_Carga !== "" ? row.Horas_Carga : (row.horas !== undefined && row.horas !== "" ? row.horas : row.horas_carga);
+              const horas = (rawHoras !== undefined && rawHoras !== null && rawHoras !== "") ? Number(rawHoras) : 0;
+              
+              // Only load the new ones! Do NOT overwrite those already configured!
+              const exists = Object.keys(variables[jornada]).some(k => k.toLowerCase() === siglaOriginal.toLowerCase());
+              if (!exists) {
+                newVars[jornada][siglaOriginal] = isNaN(horas) ? 0 : horas;
+                updatedCount++;
+              }
             }
           }
           await setDoc(doc(db, 'settings', 'variables'), newVars);
@@ -277,10 +335,38 @@ export const AdminToolbox: React.FC<AdminToolboxProps> = ({
           const monthKey = `${selectedYear}_${selectedMonth}`;
           onNotify(`Importando turnos para el mes ${selectedMonth + 1}/${selectedYear}...`, 'info');
           
-          for (const row of data as any[]) {
-            const doctorId = row.ID_MEDICO || row.id_medico || row.ID || row.Id || row.id;
-            if (!doctorId) continue;
+          let successCount = 0;
+          let failedCount = 0;
 
+          for (const row of data as any[]) {
+            const rowId = row.ID_MEDICO || row.id_medico || row.ID || row.Id || row.id;
+            const rowName = row.NOMBRE_MEDICO || row.nombre_medico || row.NOMBRE || row.Nombre || row.medico || row.MEDICO || "";
+            
+            let matchedDoc: Doctor | null = null;
+            
+            // 1. Exact ID check
+            if (rowId) {
+              const parsedId = Number(rowId);
+              if (!isNaN(parsedId)) {
+                matchedDoc = doctors.find(d => d.id === parsedId) || null;
+              }
+            }
+            
+            // 2. Fuzzy name or ID string search check
+            if (!matchedDoc && rowName) {
+              matchedDoc = getFuzzyMatchDoctor(String(rowName), doctors);
+            }
+            if (!matchedDoc && rowId) {
+              matchedDoc = getFuzzyMatchDoctor(String(rowId), doctors);
+            }
+            
+            if (!matchedDoc) {
+              console.warn(`No se pudo encontrar correspondencia para el médico en fila: ID=${rowId || 'N/A'}, Nombre=${rowName || 'N/A'}`);
+              failedCount++;
+              continue;
+            }
+
+            const doctorId = matchedDoc.id;
             const rawJ = String(row.JORNADA || row.jornada || row['JORNADA'] || row['Jornada'] || row['Slot'] || row['slot'] || "").trim().toLowerCase();
             let slot: SlotType = 'm';
             if (rawJ === 't' || rawJ === 'tarde' || rawJ.includes('tard')) slot = 't';
@@ -305,9 +391,14 @@ export const AdminToolbox: React.FC<AdminToolboxProps> = ({
               await setDoc(doc(db, 'monthlyData', monthKey, 'doctors', String(doctorId)), {
                 [slot]: shiftUpdate
               }, { merge: true });
+              successCount++;
             }
           }
-          onNotify("Turnos importados exitosamente", 'success');
+          if (failedCount > 0) {
+            onNotify(`Turnos importados con éxito: ${successCount} filas procesadas. Advertencia: ${failedCount} médicos no coincidieron en BD.`, 'info');
+          } else {
+            onNotify(`Turnos importados exitosamente (${successCount} procesados)`, 'success');
+          }
         }
         
         // Refresh page to see changes

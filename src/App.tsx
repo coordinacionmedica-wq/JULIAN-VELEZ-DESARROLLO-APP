@@ -123,6 +123,7 @@ import Markdown from 'react-markdown';
 import { InductionManual } from './components/InductionManual';
 import { AntibioticManual } from './components/AntibioticManual';
 import { HumanResourcesView } from './components/HumanResourcesView';
+import { GoogleDriveService } from './services/googleDriveService';
 import { CensusView } from './components/CensusView';
 import { ProductivityStatsView } from './components/ProductivityStatsView';
 import { AdminToolbox } from './components/AdminToolbox';
@@ -1897,8 +1898,9 @@ Donde doctorId es el ID numérico del médico y las llaves de los días son del 
     const changedIdentity = editingVar && (editingVar.slot !== newVarSlot || editingVar.code !== code);
     
     if (isNew || changedIdentity) {
-      if (variables[newVarSlot][code] !== undefined) {
-         alert(`ERROR: La sigla "${code}" ya existe registrada en la jornada ${newVarSlot === 'm' ? 'MAÑANA' : newVarSlot === 't' ? 'TARDE' : 'NOCHE'}.`);
+      const existsCaseInsensitive = Object.keys(variables[newVarSlot]).find(k => k.toLowerCase() === code.toLowerCase());
+      if (existsCaseInsensitive !== undefined) {
+         alert(`ERROR: La sigla "${code}" ya existe registrada en la jornada ${newVarSlot === 'm' ? 'MAÑANA' : newVarSlot === 't' ? 'TARDE' : 'NOCHE'} como "${existsCaseInsensitive}". Elija otro nombre o edite la existente.`);
          return;
       }
     }
@@ -3746,8 +3748,10 @@ Usa un tono directivo, formal y conciso en español. Solo usa negritas y viñeta
                       <div className="text-3xl font-bold text-slate-800">{doctors.filter(d => d.st === 'activo').length}</div>
                    </div>
                    <div className="bg-white p-6 rounded-3xl border border-emerald-100 text-center shadow-sm">
-                      <p className="text-[10px] uppercase text-emerald-600 mb-1 font-bold">REGLAS ACTIVAS</p>
-                      <div className="text-3xl font-bold text-slate-800">12</div>
+                      <p className="text-[10px] uppercase text-emerald-600 mb-1 font-bold">SIGLAS TURNOS</p>
+                      <div className="text-3xl font-bold text-slate-800">
+                        {Object.keys(variables.m).length + Object.keys(variables.t).length + Object.keys(variables.n).length}
+                      </div>
                    </div>
                    <button 
                     onClick={() => window.print()}
@@ -4068,7 +4072,7 @@ Usa un tono directivo, formal y conciso en español. Solo usa negritas y viñeta
                       </div>
                       <h4 className="font-bold mb-2">Informes de Función</h4>
                       <p className="text-[10px] text-slate-400 leading-relaxed">
-                        Resumen para Administrador: Este panel consolida todas las reglas de negocio aplicadas al motor de turnos del hospital.
+                        Resumen para Administrador: Este panel consolida la productividad, el cumplimiento de guardias y novedades de la nómina médica de turnos.
                       </p>
                    </div>
                 </div>
@@ -5685,19 +5689,14 @@ Usa un tono directivo, formal y conciso en español. Solo usa negritas y viñeta
                                     else if (defaultSlot) jornada = defaultSlot;
                                     else jornada = 'm';
 
-                                    const rawHoras = row.Horas_Carga || row.horas || row.horas_carga;
-                                    const horas = rawHoras !== undefined && rawHoras !== null ? Number(rawHoras) : 6;
+                                    const rawHoras = row.Horas_Carga !== undefined && row.Horas_Carga !== "" ? row.Horas_Carga : (row.horas !== undefined && row.horas !== "" ? row.horas : row.horas_carga);
+                                    const horas = (rawHoras !== undefined && rawHoras !== null && rawHoras !== "") ? Number(rawHoras) : 0;
                                     
-                                    // Deduplicate existing keys case-insensitively. Keep existing values to fix them up, but we overwrite them with the new import value (except zeros).
-                                    // Wait, the prompt says "si importo siglas no se pueden borrar las anteriores , deben corregir las malas de la base de datos ( actualizarlas) o copiar las nuevas"
-                                    let finalSigla = siglaOriginal;
-                                    for (const k of Object.keys(newVars[jornada])) {
-                                      if (k.toLowerCase() === siglaLower) {
-                                        delete newVars[jornada][k];
-                                      }
+                                    const exists = Object.keys(variables[jornada]).some(k => k.toLowerCase() === siglaLower);
+                                    if (!exists) {
+                                      newVars[jornada][siglaOriginal] = isNaN(horas) ? 0 : horas;
+                                      updatedCount++;
                                     }
-                                    newVars[jornada][finalSigla] = isNaN(horas) ? 0 : horas;
-                                    updatedCount++;
                                   }
                                 }
                                 await setDoc(doc(db, 'settings', 'variables'), newVars);
@@ -5772,9 +5771,10 @@ Usa un tono directivo, formal y conciso en español. Solo usa negritas y viñeta
                               <span className="text-slate-400">{v}h</span>
                               <button 
                                 onClick={(e) => { e.stopPropagation(); removeVariable(slot, k); }}
-                                className="absolute right-1 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 p-1 text-rose-400 hover:text-rose-600 transition-all rounded"
+                                className="absolute right-1 top-1/2 -translate-y-1/2 p-1 text-rose-500 hover:text-rose-700 transition-all rounded bg-white hover:bg-rose-50 shadow-sm border border-rose-100/60 z-10"
+                                title="Eliminar sigla"
                               >
-                                <Trash2 className="w-3 h-3" />
+                                <Trash2 className="w-3.5 h-3.5" />
                               </button>
                             </div>
                           ))}
