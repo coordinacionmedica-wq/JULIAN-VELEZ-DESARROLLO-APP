@@ -3,7 +3,7 @@ import {
   Users, Plus, Search, Filter, ClipboardList, Clock, 
   Trash2, Edit3, CheckCircle2, AlertCircle, Share2, 
   FileSpreadsheet, MessageSquare, ArrowRight, UserPlus,
-  RefreshCcw, Cloud, CloudDownload, Send
+  RefreshCcw, Cloud, CloudDownload, Send, Printer
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { collection, query, onSnapshot, addDoc, updateDoc, deleteDoc, doc, serverTimestamp, getDocs, where, setDoc } from 'firebase/firestore';
@@ -11,6 +11,7 @@ import { signInWithPopup, GoogleAuthProvider } from 'firebase/auth';
 import { auth, db, handleFirestoreError, OperationType } from '../firebase';
 import { GoogleDriveService } from '../services/googleDriveService';
 import * as XLSX from 'xlsx';
+import { HospitalLogo } from './HospitalLogo';
 
 interface Patient {
   id: string;
@@ -30,12 +31,16 @@ interface Patient {
   updatedBy?: string;
   deliveredBy?: string;
   receivedBy?: string;
+  isRemitido?: boolean;
+  remitidoComment?: string;
 }
 
 interface Doctor {
   id: number;
   nombre: string;
   contacto?: string;
+  apellidos?: string;
+  registroMedico?: string;
 }
 
 interface Props {
@@ -46,9 +51,11 @@ interface Props {
 }
 
 const SECTIONS = [
+  "URGENCIAS",
   "OBSERVACION URGENCIAS",
   "HOSPITALIZACION",
-  "URGENCIAS/PARTOS/CIRUGIA"
+  "PARTOS",
+  "CIRUGIA"
 ];
 
 export function CensusView({ currentUser, isAdmin, isAuthenticated, doctors }: Props) {
@@ -75,6 +82,165 @@ export function CensusView({ currentUser, isAdmin, isAuthenticated, doctors }: P
   const [iframeLoaded, setIframeLoaded] = useState(false);
   const [hasGoogleToken, setHasGoogleToken] = useState(!!localStorage.getItem('google_access_token'));
   const [patientToDelete, setPatientToDelete] = useState<string | null>(null);
+
+  // Inline Editing States and Utilities
+  const [isInlineEditEnabled, setIsInlineEditEnabled] = useState(true);
+  const [activeCell, setActiveCell] = useState<{ id: string; field: string; value: string } | null>(null);
+  const [savingCells, setSavingCells] = useState<{ [key: string]: boolean }>({});
+
+  // Background Sheets Sync helper
+  const triggerDriveBackgroundSync = async (updatedPatientsList: Patient[]) => {
+    if (!selectedDriveFile || !selectedDriveFile.id) return;
+    const isSheet = selectedDriveFile.mimeType?.includes('spreadsheet');
+    if (!isSheet) return;
+
+    try {
+      const values = [
+        ['CAMA', 'FECHA_INGRESO', 'PACIENTE', 'EDAD', 'EPS', 'SECCION', 'DIAGNOSTICO', 'MANEJO', 'PARACLINICOS', 'PENDIENTE', 'REMITIDO', 'ESTADO_REMITIDO', 'ESPECIALIDAD', 'MEDICO_ENTREGA', 'MEDICO_RECIBE', 'ACTUALIZADO_POR', 'FECHA_ACTUALIZACION'],
+        ...updatedPatientsList.map(p => [
+          p.bed || 'S/C', 
+          p.entryDate || '', 
+          p.name || '', 
+          p.age || '', 
+          p.eps || '', 
+          p.section || 'HOSPITALIZACION', 
+          p.diagnoses || '', 
+          p.managementPlan || '', 
+          p.paraclinicals || '', 
+          p.pendientes || '', 
+          p.isRemitido ? 'SI' : 'NO', 
+          p.remitidoComment || '', 
+          p.specialty || '', 
+          p.deliveredBy || '', 
+          p.receivedBy || '', 
+          p.updatedBy || '', 
+          new Date(p.updatedAt || Date.now()).toISOString()
+        ]).sort((a,b) => String(a[0]).localeCompare(String(b[0])))
+      ];
+      await GoogleDriveService.updateSheetValues(selectedDriveFile.id, 'Sheet1!A1', values);
+      console.log("Auto-saved changes to Google Sheets successfully in background.");
+    } catch (err) {
+      console.error("Auto background Sheets sync failed:", err);
+    }
+  };
+
+  const InlineCell = ({ 
+    patient, 
+    field, 
+    type = 'text', 
+    className = "", 
+    viewClassName = "",
+    placeholder = "Editar..."
+  }: { 
+    patient: Patient, 
+    field: string, 
+    type?: 'text' | 'textarea' | 'date', 
+    className?: string,
+    viewClassName?: string,
+    placeholder?: string
+  }) => {
+    const isEditing = activeCell?.id === patient.id && activeCell?.field === field;
+    const cellValue = String((patient as any)[field] || '');
+    const cellKey = `${patient.id}-${field}`;
+    const isSaving = savingCells[cellKey];
+
+    const [localVal, setLocalVal] = useState(cellValue);
+
+    useEffect(() => {
+      if (!isEditing) {
+        setLocalVal(cellValue);
+      }
+    }, [cellValue, isEditing]);
+
+    const handleCommit = async () => {
+      const trimmed = localVal.trim();
+      if (trimmed === cellValue) {
+        setActiveCell(null);
+        return;
+      }
+      
+      setSavingCells(prev => ({ ...prev, [cellKey]: true }));
+      try {
+        const patientRef = doc(db, 'census', patient.id);
+        const updateData = {
+          [field]: trimmed,
+          updatedAt: Date.now(),
+          updatedBy: currentUser?.nombre || 'SISTEMA'
+        };
+        await updateDoc(patientRef, updateData);
+        
+        // Background sync to Drive Spreadsheet
+        const updatedList = patients.map(p => p.id === patient.id ? { ...p, ...updateData } : p);
+        await triggerDriveBackgroundSync(updatedList);
+        
+      } catch (err) {
+        console.error("Error committing inline edit:", err);
+      } finally {
+        setSavingCells(prev => ({ ...prev, [cellKey]: false }));
+        setActiveCell(null);
+      }
+    };
+
+    if (isEditing) {
+      if (type === 'textarea') {
+        return (
+          <div className="relative w-full z-30">
+            <textarea
+              className={`w-full bg-amber-50 p-2 border-2 border-amber-400 rounded-xl text-xs font-semibold focus:ring-1 focus:ring-amber-500 outline-none shadow-lg min-h-[90px] ${className}`}
+              value={localVal}
+              onChange={(e) => setLocalVal(e.target.value)}
+              onBlur={handleCommit}
+              onKeyDown={(e) => {
+                if (e.key === 'Escape') {
+                  setLocalVal(cellValue);
+                  setActiveCell(null);
+                }
+              }}
+              autoFocus
+            />
+          </div>
+        );
+      }
+      return (
+        <input
+          type={type}
+          className={`w-full bg-amber-50 p-2 border-2 border-amber-400 rounded-xl text-xs font-semibold focus:ring-1 focus:ring-amber-500 outline-none shadow-md ${className}`}
+          value={localVal}
+          onChange={(e) => setLocalVal(e.target.value)}
+          onBlur={handleCommit}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              handleCommit();
+            } else if (e.key === 'Escape') {
+              setLocalVal(cellValue);
+              setActiveCell(null);
+            }
+          }}
+          autoFocus
+        />
+      );
+    }
+
+    return (
+      <div 
+        onClick={() => {
+          if (isInlineEditEnabled) {
+            setActiveCell({ id: patient.id, field, value: cellValue });
+          }
+        }}
+        className={`p-2 rounded-xl transition-all relative ${isInlineEditEnabled ? 'cursor-pointer hover:bg-emerald-50/50 hover:ring-2 hover:ring-emerald-400/20' : ''} ${isSaving ? 'opacity-50 animate-pulse' : ''} ${viewClassName}`}
+      >
+        {isSaving && (
+          <div className="absolute right-2 top-2 w-3.5 h-3.5 border-2 border-emerald-600 border-t-transparent rounded-full animate-spin"></div>
+        )}
+        {cellValue ? (
+          <span className="whitespace-pre-wrap">{cellValue}</span>
+        ) : (
+          <span className="text-slate-300 italic text-[10px] font-black uppercase">{placeholder}</span>
+        )}
+      </div>
+    );
+  };
 
   
   // Form State
@@ -105,6 +271,7 @@ export function CensusView({ currentUser, isAdmin, isAuthenticated, doctors }: P
   const [isSyncing, setIsSyncing] = useState(false);
 
   const handleGoogleLogin = async () => {
+    if (loading) return;
     const provider = new GoogleAuthProvider();
     provider.addScope('https://www.googleapis.com/auth/drive');
     provider.addScope('https://www.googleapis.com/auth/spreadsheets');
@@ -127,6 +294,10 @@ export function CensusView({ currentUser, isAdmin, isAuthenticated, doctors }: P
       if (err.code === 'auth/unauthorized-domain') {
         const currentDomain = window.location.hostname;
         alert(`⚠️ DOMINIO NO AUTORIZADO\n\nEl dominio "${currentDomain}" no está autorizado en tu consola de Firebase.\nSi eres Administrador, entra a tu Consola de Firebase > Authentication > Settings > Authorized Domains y añade este dominio.`);
+      } else if (err.code === 'auth/cancelled-popup-request') {
+        console.warn("Google Login popup request was cancelled or superseded in CensusView.");
+      } else if (err.code === 'auth/popup-closed-by-user') {
+        console.warn("User closed the Google login popup inside CensusView.");
       } else {
         alert("Error al iniciar sesión con Google: " + (err.message || String(err)));
       }
@@ -164,6 +335,7 @@ export function CensusView({ currentUser, isAdmin, isAuthenticated, doctors }: P
     const lines = text.split('\n');
     const tempPatients: Partial<Patient>[] = [];
     let currentPatient: Partial<Patient> | null = null;
+    let lastField: 'diagnoses' | 'managementPlan' | 'paraclinicals' | 'pendientes' | 'name' | null = null;
     
     for (const rawLine of lines) {
       let line = rawLine.trim();
@@ -194,65 +366,124 @@ export function CensusView({ currentUser, isAdmin, isAuthenticated, doctors }: P
           name: '',
           diagnoses: '',
           managementPlan: '',
+          paraclinicals: '',
           pendientes: '',
+          age: '',
+          eps: '',
+          isRemitido: false,
+          remitidoComment: '',
           specialty: 'MEDICINA INTERNA',
           section: 'HOSPITALIZACION',
         };
+        lastField = null;
         continue;
       }
       
       if (currentPatient) {
         const nameMatch = cleanLine.match(/^(paciente|nombre|name|patient)\s*[:\-\s]\s*(.+)$/i);
         if (nameMatch) {
-          currentPatient.name = nameMatch[2].trim();
+          const val = nameMatch[2].trim();
+          const epsRegex = /(?:•?\s*EPS\s*:\s*(.+))/i;
+          const epsMatch = val.match(epsRegex);
+          let remaining = val;
+          if (epsMatch) {
+            currentPatient.eps = epsMatch[1].trim();
+            remaining = val.replace(epsMatch[0], '').trim();
+          }
+          
+          const ageRegex = /\(([^)]+)\)/;
+          const ageMatch = remaining.match(ageRegex);
+          if (ageMatch) {
+            currentPatient.age = ageMatch[1].trim();
+            currentPatient.name = remaining.replace(ageMatch[0], '').trim();
+          } else {
+            currentPatient.name = remaining;
+          }
+          lastField = 'name';
+          continue;
+        }
+
+        const dateMatch = cleanLine.match(/^(fecha|entrydate|fecha_ingreso|date)\s*[:\-\s]\s*(.+)$/i);
+        if (dateMatch) {
+          currentPatient.entryDate = dateMatch[2].trim();
+          lastField = null;
           continue;
         }
         
         const idxMatch = cleanLine.match(/^(diagnostico|diagnóstico|diagnosticos|diagnósticos|idx|diagnoses|dx|diagnostico\(s\))\s*[:\-\s]\s*(.+)$/i);
         if (idxMatch) {
           currentPatient.diagnoses = idxMatch[2].trim();
+          lastField = 'diagnoses';
           continue;
         }
         
         const manejoMatch = cleanLine.match(/^(manejo|plan|tratamiento|management|plan de manejo)\s*[:\-\s]\s*(.+)$/i);
         if (manejoMatch) {
           currentPatient.managementPlan = manejoMatch[2].trim();
+          lastField = 'managementPlan';
           continue;
         }
-        
+
+        const paracMatch = cleanLine.match(/^(paraclinicos|paraclínicos|paraclinicals|laboratorios|labs)\s*[:\-\s]\s*(.+)$/i);
+        if (paracMatch) {
+          currentPatient.paraclinicals = paracMatch[2].trim();
+          lastField = 'paraclinicals';
+          continue;
+        }
+
         const pdteMatch = cleanLine.match(/^(pendiente|pendientes|pdte|pnd|pndtes)\s*[:\-\s]\s*(.+)$/i);
         if (pdteMatch) {
           currentPatient.pendientes = pdteMatch[2].trim();
+          lastField = 'pendientes';
+          continue;
+        }
+
+        const remitidoMatch = cleanLine.match(/^(remitido|es_remitido|is_remitido|isremitido)\s*[:\-\s]\s*(si|sí|true|yes|no|false)\s*$/i);
+        if (remitidoMatch) {
+          currentPatient.isRemitido = /^(si|sí|true|yes)$/i.test(remitidoMatch[2].trim());
+          lastField = null;
+          continue;
+        }
+
+        const commentMatch = cleanLine.match(/^(comentario|comentario_estado|comentario_remitido|remitido_comment|remitidocomment|estado)\s*[:\-\s]\s*(.+)$/i);
+        if (commentMatch) {
+          currentPatient.remitidoComment = commentMatch[2].trim();
+          lastField = null;
           continue;
         }
         
         const espMatch = cleanLine.match(/^(especialidad|especialidades|servicio|specialty)\s*[:\-\s]\s*(.+)$/i);
         if (espMatch) {
           currentPatient.specialty = espMatch[2].trim();
+          lastField = null;
           continue;
         }
         
         const seccMatch = cleanLine.match(/^(seccion|sección|ubicacion|ubicación|sala|section)\s*[:\-\s]\s*(.+)$/i);
         if (seccMatch) {
           currentPatient.section = seccMatch[2].trim().toUpperCase();
+          lastField = null;
           continue;
         }
 
         const entregaMatch = cleanLine.match(/^(medico_entrega|médico_entrega|entrega|deliveredby)\s*[:\-\s]\s*(.+)$/i);
         if (entregaMatch) {
           currentPatient.deliveredBy = entregaMatch[2].trim();
+          lastField = null;
           continue;
         }
 
         const recibeMatch = cleanLine.match(/^(medico_recibe|médico_recibe|recibe|receivedby)\s*[:\-\s]\s*(.+)$/i);
         if (recibeMatch) {
           currentPatient.receivedBy = recibeMatch[2].trim();
+          lastField = null;
           continue;
         }
 
         const actPorMatch = cleanLine.match(/^(actualizado_por|actualizado|updatedby)\s*[:\-\s]\s*(.+)$/i);
         if (actPorMatch) {
           currentPatient.updatedBy = actPorMatch[2].trim();
+          lastField = null;
           continue;
         }
 
@@ -262,15 +493,28 @@ export function CensusView({ currentUser, isAdmin, isAuthenticated, doctors }: P
           if (!isNaN(parsedTime)) {
             currentPatient.updatedAt = parsedTime;
           }
+          lastField = null;
           continue;
         }
         
-        if (!currentPatient.name) {
+        // Multi-line continuation fallback
+        if (lastField === 'diagnoses') {
+          currentPatient.diagnoses += '\n' + cleanLine;
+        } else if (lastField === 'managementPlan') {
+          currentPatient.managementPlan += '\n' + cleanLine;
+        } else if (lastField === 'paraclinicals') {
+          currentPatient.paraclinicals += '\n' + cleanLine;
+        } else if (lastField === 'pendientes') {
+          currentPatient.pendientes += '\n' + cleanLine;
+        } else if (!currentPatient.name) {
           currentPatient.name = cleanLine;
+          lastField = 'name';
         } else if (!currentPatient.diagnoses) {
           currentPatient.diagnoses = cleanLine;
+          lastField = 'diagnoses';
         } else {
           currentPatient.managementPlan += (currentPatient.managementPlan ? '\n' : '') + cleanLine;
+          lastField = 'managementPlan';
         }
       } else {
         const csvParts = cleanLine.split(/[,\t;]+/);
@@ -295,26 +539,50 @@ export function CensusView({ currentUser, isAdmin, isAuthenticated, doctors }: P
     return tempPatients;
   };
 
-  const formatPatientsToPlainDocText = (patientsList: Patient[]): string => {
-    let text = `==================================================\n`;
-    text += `   CENSO HOSPITALARIO - ENTREGA DE TURNOS DE DIARIO\n`;
-    text += `==================================================\n\n`;
-    text += `Fecha de Sincronización: ${new Date().toLocaleString('es-CO')}\n`;
-    text += `--------------------------------------------------\n\n`;
+  const getDoctorFullLabel = (docName: string) => {
+    if (!docName) return '';
+    const match = doctors?.find(d => 
+      d.nombre.toLowerCase().trim() === docName.toLowerCase().trim() || 
+      `${d.nombre} ${d.apellidos || ''}`.toLowerCase().trim() === docName.toLowerCase().trim()
+    );
+    if (match) {
+      const full = `${match.nombre} ${match.apellidos || ''}`.trim();
+      return match.registroMedico ? `${full} - RM: ${match.registroMedico}` : full;
+    }
+    return docName;
+  };
 
-    patientsList.forEach((p) => {
+  const formatPatientsToPlainDocText = (patientsList: Patient[]): string => {
+    let text = `==================================================================================================\n`;
+    text += `                              CENSO HOSPITALARIO - ENTREGA DE TURNOS\n`;
+    text += `==================================================================================================\n`;
+    text += `Fecha de Reporte: ${new Date().toLocaleString('es-CO')}\n`;
+    text += `Total de Pacientes: ${patientsList.length}\n`;
+    text += `==================================================================================================\n\n`;
+
+    patientsList.forEach((p, idx) => {
+      text += `--------------------------------------------------------------------------------------------------\n`;
+      text += `[ REGISTRO N° ${idx + 1} - ENTREGA DE TURNO ]\n`;
+      text += `--------------------------------------------------------------------------------------------------\n`;
       text += `Cama: ${p.bed || 'S/C'}\n`;
-      text += `Paciente: ${p.name || ''}\n`;
-      text += `Sección: ${p.section || ''}\n`;
+      text += `Fecha: ${p.entryDate || ''}\n`;
+      text += `Paciente: ${p.name || ''} (${p.age || ''}) • EPS: ${p.eps || ''}\n`;
       text += `Especialidad: ${p.specialty || ''}\n`;
-      text += `Diagnósticos: ${p.diagnoses || ''}\n`;
-      text += `Manejo: ${p.managementPlan || ''}\n`;
-      text += `Pendientes: ${p.pendientes || 'Ninguno'}\n`;
-      if (p.deliveredBy) text += `Medico_Entrega: ${p.deliveredBy}\n`;
-      if (p.receivedBy) text += `Medico_Recibe: ${p.receivedBy}\n`;
-      text += `Actualizado_Por: ${p.updatedBy || 'Sincronizador'}\n`;
-      text += `Fecha_Actualizacion: ${new Date(p.updatedAt || Date.now()).toISOString()}\n`;
-      text += `--------------------------------------------------\n\n`;
+      text += `Seccion: ${p.section || ''}\n`;
+      text += `\n`;
+      text += `Diagnostico:\n${p.diagnoses || ''}\n`;
+      text += `\n`;
+      text += `Manejo:\n${p.managementPlan || ''}\n`;
+      text += `\n`;
+      text += `Paraclinicos:\n${p.paraclinicals || 'SIN REGISTRO'}\n`;
+      text += `\n`;
+      text += `Pendiente:\n${p.pendientes || 'NINGUNO'}\n`;
+      text += `\n`;
+      text += `Remitido: ${p.isRemitido ? 'SI' : 'NO'}\n`;
+      text += `Estado: ${p.remitidoComment || 'NINGUNO'}\n`;
+      text += `Medico_Entrega: ${p.deliveredBy || ''}\n`;
+      text += `Medico_Recibe: ${p.receivedBy || ''}\n`;
+      text += `--------------------------------------------------------------------------------------------------\n\n`;
     });
     return text;
   };
@@ -367,6 +635,12 @@ export function CensusView({ currentUser, isAdmin, isAuthenticated, doctors }: P
         const specialty = p.specialty || 'MEDICINA INTERNA';
         const entrega = p.deliveredBy || '';
         const recibe = p.receivedBy || '';
+        const age = p.age || '';
+        const eps = p.eps || '';
+        const paraclinicals = p.paraclinicals || '';
+        const isRemitido = p.isRemitido || false;
+        const remitidoComment = p.remitidoComment || '';
+        const entryDate = p.entryDate || new Date().toISOString().split('T')[0];
         const actualizadoPor = p.updatedBy || currentUser?.nombre || 'Importación Google Docs';
         const updatedAt = p.updatedAt || Date.now();
 
@@ -380,7 +654,12 @@ export function CensusView({ currentUser, isAdmin, isAuthenticated, doctors }: P
             (pendientes !== existing.pendientes) ||
             (specialty !== existing.specialty) ||
             (entrega !== existing.deliveredBy) ||
-            (recibe !== existing.receivedBy);
+            (recibe !== existing.receivedBy) ||
+            (age !== existing.age) ||
+            (eps !== existing.eps) ||
+            (paraclinicals !== existing.paraclinicals) ||
+            (isRemitido !== existing.isRemitido) ||
+            (remitidoComment !== existing.remitidoComment);
 
           if (hasChanges || updatedAt > (existing.updatedAt || 0)) {
             await setDoc(doc(db, 'census', existing.id), {
@@ -392,6 +671,11 @@ export function CensusView({ currentUser, isAdmin, isAuthenticated, doctors }: P
               specialty: specialty || existing.specialty,
               deliveredBy: entrega || existing.deliveredBy || '',
               receivedBy: recibe || existing.receivedBy || '',
+              age: age || existing.age || '',
+              eps: eps || existing.eps || '',
+              paraclinicals: paraclinicals || existing.paraclinicals || '',
+              isRemitido: isRemitido !== undefined ? isRemitido : (existing.isRemitido || false),
+              remitidoComment: remitidoComment || existing.remitidoComment || '',
               updatedAt: Date.now(),
               updatedBy: actualizadoPor
             });
@@ -410,10 +694,12 @@ export function CensusView({ currentUser, isAdmin, isAuthenticated, doctors }: P
             specialty,
             deliveredBy: entrega,
             receivedBy: recibe,
-            entryDate: new Date().toISOString().split('T')[0],
-            age: '',
-            eps: '',
-            paraclinicals: '',
+            entryDate,
+            age,
+            eps,
+            paraclinicals,
+            isRemitido,
+            remitidoComment,
             updatedAt: Date.now(),
             updatedBy: actualizadoPor
           });
@@ -469,20 +755,26 @@ export function CensusView({ currentUser, isAdmin, isAuthenticated, doctors }: P
           return;
         }
         itemsToImport = parsedPatients.map(p => ([
-          p.bed, 
-          p.name, 
-          p.section, 
-          p.diagnoses, 
-          p.managementPlan, 
-          p.pendientes, 
-          p.specialty, 
+          p.bed || '', 
+          p.entryDate || '',
+          p.name || '', 
+          p.age || '',
+          p.eps || '',
+          p.section || 'HOSPITALIZACION', 
+          p.diagnoses || '', 
+          p.managementPlan || '', 
+          p.paraclinicals || '',
+          p.pendientes || '', 
+          p.isRemitido ? 'SI' : 'NO',
+          p.remitidoComment || '',
+          p.specialty || '', 
           p.deliveredBy || '', 
           p.receivedBy || '', 
           p.updatedBy || '', 
           p.updatedAt ? new Date(p.updatedAt).toISOString() : ''
         ]));
       } else {
-        const rows = await GoogleDriveService.getSheetValues(fileId, 'Sheet1!A2:K');
+        const rows = await GoogleDriveService.getSheetValues(fileId, 'Sheet1!A2:Q');
         if (!rows || rows.length === 0) {
           alert("El archivo base está vacío o no tiene el formato correcto.");
           return;
@@ -495,33 +787,70 @@ export function CensusView({ currentUser, isAdmin, isAuthenticated, doctors }: P
       let skippedCount = 0;
 
       for (const row of itemsToImport) {
-        if (!row || row.length < 2 || !row[0] || !row[1]) continue; 
+        if (!row || row.length < 2) continue;
+        const tempBed = row[0] ? String(row[0]).trim() : '';
+        const tempName = (row.length >= 17 ? row[2] : row[1]) ? String(row.length >= 17 ? row[2] : row[1]).trim() : '';
+        if (!tempBed && !tempName) continue; 
         
-        const bed = String(row[0]).trim();
-        const name = String(row[1]).trim();
-        const section = row[2] ? String(row[2]).trim() : '';
-        const diagnoses = row[3] ? String(row[3]).trim() : '';
-        const managementPlan = row[4] ? String(row[4]).trim() : '';
-        const pendientes = row[5] ? String(row[5]).trim() : '';
-        const specialty = row[6] ? String(row[6]).trim() : '';
-        
+        let bed = '';
+        let entryDate = '';
+        let name = '';
+        let age = '';
+        let eps = '';
+        let section = '';
+        let diagnoses = '';
+        let managementPlan = '';
+        let paraclinicals = '';
+        let pendientes = '';
+        let isRemitido = false;
+        let remitidoComment = '';
+        let specialty = '';
         let entrega = '';
         let recibe = '';
-        let actualizadoStr = '';
         let actualizadoPor = '';
-        
-        if (row.length >= 11) {
-           entrega = row[7] ? String(row[7]).trim() : '';
-           recibe = row[8] ? String(row[8]).trim() : '';
-           actualizadoPor = row[9] ? String(row[9]).trim() : '';
-           actualizadoStr = row[10] ? String(row[10]).trim() : '';
-        } else if (row.length === 10) {
-           entrega = row[7] ? String(row[7]).trim() : '';
-           recibe = row[8] ? String(row[8]).trim() : '';
-           actualizadoStr = row[9] ? String(row[9]).trim() : '';
+        let actualizadoStr = '';
+
+        if (row.length >= 17) {
+          bed = String(row[0]).trim();
+          entryDate = row[1] ? String(row[1]).trim() : '';
+          name = String(row[2]).trim();
+          age = row[3] ? String(row[3]).trim() : '';
+          eps = row[4] ? String(row[4]).trim() : '';
+          section = row[5] ? String(row[5]).trim() : '';
+          diagnoses = row[6] ? String(row[6]).trim() : '';
+          managementPlan = row[7] ? String(row[7]).trim() : '';
+          paraclinicals = row[8] ? String(row[8]).trim() : '';
+          pendientes = row[9] ? String(row[9]).trim() : '';
+          isRemitido = String(row[10]).trim().toUpperCase() === 'SI' || String(row[10]).trim().toLowerCase() === 'true';
+          remitidoComment = row[11] ? String(row[11]).trim() : '';
+          specialty = row[12] ? String(row[12]).trim() : '';
+          entrega = row[13] ? String(row[13]).trim() : '';
+          recibe = row[14] ? String(row[14]).trim() : '';
+          actualizadoPor = row[15] ? String(row[15]).trim() : '';
+          actualizadoStr = row[16] ? String(row[16]).trim() : '';
         } else {
-           entrega = row[7] ? String(row[7]).trim() : '';
-           actualizadoStr = row[8] ? String(row[8]).trim() : '';
+          // Fallback legacy columns
+          bed = String(row[0]).trim();
+          name = String(row[1]).trim();
+          section = row[2] ? String(row[2]).trim() : 'HOSPITALIZACION';
+          diagnoses = row[3] ? String(row[3]).trim() : '';
+          managementPlan = row[4] ? String(row[4]).trim() : '';
+          pendientes = row[5] ? String(row[5]).trim() : '';
+          specialty = row[6] ? String(row[6]).trim() : 'MEDICINA INTERNA';
+          
+          if (row.length >= 11) {
+             entrega = row[7] ? String(row[7]).trim() : '';
+             recibe = row[8] ? String(row[8]).trim() : '';
+             actualizadoPor = row[9] ? String(row[9]).trim() : '';
+             actualizadoStr = row[10] ? String(row[10]).trim() : '';
+          } else if (row.length === 10) {
+             entrega = row[7] ? String(row[7]).trim() : '';
+             recibe = row[8] ? String(row[8]).trim() : '';
+             actualizadoStr = row[9] ? String(row[9]).trim() : '';
+          } else {
+             entrega = row[7] ? String(row[7]).trim() : '';
+             actualizadoStr = row[8] ? String(row[8]).trim() : '';
+          }
         }
         
         const medico = actualizadoPor || entrega || recibe || currentUser?.nombre || 'Importación Drive';
@@ -544,7 +873,12 @@ export function CensusView({ currentUser, isAdmin, isAuthenticated, doctors }: P
             (pendientes && pendientes !== existing.pendientes) ||
             (specialty && specialty !== existing.specialty) ||
             (entrega && entrega !== existing.deliveredBy) ||
-            (recibe && recibe !== existing.receivedBy);
+            (recibe && recibe !== existing.receivedBy) ||
+            (age && age !== existing.age) ||
+            (eps && eps !== existing.eps) ||
+            (paraclinicals && paraclinicals !== existing.paraclinicals) ||
+            (isRemitido !== existing.isRemitido) ||
+            (remitidoComment && remitidoComment !== existing.remitidoComment);
 
           const isNewer = sheetDate > (existing.updatedAt || 0);
 
@@ -558,6 +892,11 @@ export function CensusView({ currentUser, isAdmin, isAuthenticated, doctors }: P
               specialty: specialty || existing.specialty,
               deliveredBy: entrega || existing.deliveredBy || '',
               receivedBy: recibe || existing.receivedBy || '',
+              age: age || existing.age || '',
+              eps: eps || existing.eps || '',
+              paraclinicals: paraclinicals || existing.paraclinicals || '',
+              isRemitido: isRemitido !== undefined ? isRemitido : (existing.isRemitido || false),
+              remitidoComment: remitidoComment || existing.remitidoComment || '',
               updatedAt: hasChanges ? Date.now() : sheetDate,
               updatedBy: medico
             });
@@ -576,8 +915,12 @@ export function CensusView({ currentUser, isAdmin, isAuthenticated, doctors }: P
             specialty: specialty || 'MEDICINA INTERNA',
             deliveredBy: entrega || '',
             receivedBy: recibe || '',
-            entryDate: new Date().toISOString().split('T')[0],
-            age: '', eps: '', paraclinicals: '',
+            entryDate: entryDate || new Date().toISOString().split('T')[0],
+            age: age || '',
+            eps: eps || '',
+            paraclinicals: paraclinicals || '',
+            isRemitido: isRemitido || false,
+            remitidoComment: remitidoComment || '',
             updatedAt: sheetDate,
             updatedBy: medico
           });
@@ -622,25 +965,10 @@ export function CensusView({ currentUser, isAdmin, isAuthenticated, doctors }: P
       const dateStr = now.toLocaleDateString().replace(/\//g, '-');
       const timeStr = `${now.getHours().toString().padStart(2, '0')}-${now.getMinutes().toString().padStart(2, '0')}`;
       
-      const fileName = auto 
-        ? `Censo_${year}_${monthPrefix}_${dayStr}_${timeStr.replace('-', '')}.xlsx`
-        : `CENSO_MANUAL_${filterSection === 'all' ? 'TOTAL' : filterSection.replace(/\//g, '-')}_${dateStr}_${timeStr}.xlsx`;
-
-      const spreadsheetId = await GoogleDriveService.findOrCreateSheet(fileName, folderId);
-      
       // Fetch fresh data from DB to avoid stale state issues (because onSnapshot is async)
       const q = query(collection(db, 'census'));
       const snapshot = await getDocs(q);
       const freshPatients = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })) as Patient[];
-
-      const values = [
-        ['CAMA', 'PACIENTE', 'SECCION', 'DIAGNOSTICOS', 'MANEJO', 'PENDIENTES', 'ESPECIALIDAD', 'MEDICO_ENTREGA', 'MEDICO_RECIBE', 'ACTUALIZADO_POR', 'FECHA_ACTUALIZACION'],
-        ...freshPatients.map(p => [
-          p.bed, p.name, p.section, p.diagnoses, p.managementPlan, p.pendientes, p.specialty, p.deliveredBy || '', p.receivedBy || '', p.updatedBy || '', new Date(p.updatedAt || Date.now()).toISOString()
-        ])
-      ];
-      
-      await GoogleDriveService.updateSheetValues(spreadsheetId, 'Sheet1!A1', values);
 
       // Create matching Google Doc
       const docName = auto 
@@ -654,7 +982,7 @@ export function CensusView({ currentUser, isAdmin, isAuthenticated, doctors }: P
       setSyncStatus('Sincronizado');
       setShowSyncSuccessToast(true);
       setTimeout(() => setShowSyncSuccessToast(false), 3000);
-      if (!auto) alert(`Sincronización exitosa con Drive (Spreadsheet y Documento Google Doc creados)`);
+      if (!auto) alert(`Sincronización exitosa con Drive (Documento Google Doc creado)`);
     } catch (err: any) {
       setSyncStatus('Error');
       if (err.message?.includes('token') || err.message?.includes('sesión de Google') || err.message?.includes('expired') || err.message?.includes('expired_credential')) {
@@ -687,7 +1015,7 @@ export function CensusView({ currentUser, isAdmin, isAuthenticated, doctors }: P
       if (!searchUrlFile) return;
 
       const spreadsheetId = await GoogleDriveService.findOrCreateSheet(searchUrlFile, monthFolderId); // Find existing
-      const values = await GoogleDriveService.getSheetValues(spreadsheetId, 'Sheet1!A2:K100');
+      const values = await GoogleDriveService.getSheetValues(spreadsheetId, 'Sheet1!A2:Q100');
       
       if (values.length === 0) {
          alert("No se encontraron datos en el archivo de Drive.");
@@ -699,20 +1027,90 @@ export function CensusView({ currentUser, isAdmin, isAuthenticated, doctors }: P
 
       // Logic to update Firestore
       for (const row of values) {
-        if (!row[0] || !row[1]) continue; // Skip empty rows
+        if (!row || row.length < 2) continue;
+        const tempBed = row[0] ? String(row[0]).trim() : '';
+        const tempName = (row.length >= 17 ? row[2] : row[1]) ? String(row.length >= 17 ? row[2] : row[1]).trim() : '';
+        if (!tempBed && !tempName) continue; 
         
-        const existingPatient = patients.find(p => p.bed === row[0] && p.name === row[1]);
+        let bed = '';
+        let entryDate = '';
+        let name = '';
+        let age = '';
+        let eps = '';
+        let section = '';
+        let diagnoses = '';
+        let managementPlan = '';
+        let paraclinicals = '';
+        let pendientes = '';
+        let isRemitido = false;
+        let remitidoComment = '';
+        let specialty = '';
+        let entrega = '';
+        let recibe = '';
+        let actualizadoPor = '';
+        let actualizadoStr = '';
+
+        if (row.length >= 17) {
+          bed = String(row[0]).trim();
+          entryDate = row[1] ? String(row[1]).trim() : '';
+          name = String(row[2]).trim();
+          age = row[3] ? String(row[3]).trim() : '';
+          eps = row[4] ? String(row[4]).trim() : '';
+          section = row[5] ? String(row[5]).trim() : '';
+          diagnoses = row[6] ? String(row[6]).trim() : '';
+          managementPlan = row[7] ? String(row[7]).trim() : '';
+          paraclinicals = row[8] ? String(row[8]).trim() : '';
+          pendientes = row[9] ? String(row[9]).trim() : '';
+          isRemitido = String(row[10]).trim().toUpperCase() === 'SI' || String(row[10]).trim().toLowerCase() === 'true';
+          remitidoComment = row[11] ? String(row[11]).trim() : '';
+          specialty = row[12] ? String(row[12]).trim() : '';
+          entrega = row[13] ? String(row[13]).trim() : '';
+          recibe = row[14] ? String(row[14]).trim() : '';
+          actualizadoPor = row[15] ? String(row[15]).trim() : '';
+          actualizadoStr = row[16] ? String(row[16]).trim() : '';
+        } else {
+          // Fallback legacy columns
+          bed = String(row[0]).trim();
+          name = String(row[1]).trim();
+          section = row[2] ? String(row[2]).trim() : 'HOSPITALIZACION';
+          diagnoses = row[3] ? String(row[3]).trim() : '';
+          managementPlan = row[4] ? String(row[4]).trim() : '';
+          pendientes = row[5] ? String(row[5]).trim() : '';
+          specialty = row[6] ? String(row[6]).trim() : 'MEDICINA INTERNA';
+          
+          if (row.length >= 11) {
+             entrega = row[7] ? String(row[7]).trim() : '';
+             recibe = row[8] ? String(row[8]).trim() : '';
+             actualizadoPor = row[9] ? String(row[9]).trim() : '';
+             actualizadoStr = row[10] ? String(row[10]).trim() : '';
+          } else if (row.length === 10) {
+             entrega = row[7] ? String(row[7]).trim() : '';
+             recibe = row[8] ? String(row[8]).trim() : '';
+             actualizadoStr = row[9] ? String(row[9]).trim() : '';
+          } else {
+             entrega = row[7] ? String(row[7]).trim() : '';
+             actualizadoStr = row[8] ? String(row[8]).trim() : '';
+          }
+        }
+
+        const existingPatient = patients.find(p => p.bed === bed && p.name.toLowerCase() === name.toLowerCase());
         const patientData = {
-          bed: row[0],
-          name: row[1],
-          section: row[2] || 'HOSPITALIZACION',
-          diagnoses: row[3] || '',
-          managementPlan: row[4] || '',
-          pendientes: row[5] || '',
-          specialty: row[6] || 'GENERAL',
-          deliveredBy: row.length > 7 ? String(row[7] || '') : '',
-          receivedBy: row.length > 8 ? String(row[8] || '') : '',
-          updatedBy: row.length > 9 ? String(row[9] || 'Importado de Drive') : 'Importado de Drive',
+          bed,
+          name,
+          section: section || 'HOSPITALIZACION',
+          diagnoses: diagnoses || '',
+          managementPlan: managementPlan || '',
+          pendientes: pendientes || '',
+          specialty: specialty || 'MEDICINA INTERNA',
+          entryDate: entryDate || new Date().toISOString().split('T')[0],
+          age: age || '',
+          eps: eps || '',
+          paraclinicals: paraclinicals || '',
+          isRemitido: isRemitido || false,
+          remitidoComment: remitidoComment || '',
+          deliveredBy: entrega || '',
+          receivedBy: recibe || '',
+          updatedBy: actualizadoPor || 'Importado de Drive',
           updatedAt: Date.now()
         };
 
@@ -754,6 +1152,8 @@ export function CensusView({ currentUser, isAdmin, isAuthenticated, doctors }: P
       setFormData({ 
         section: SECTIONS[0], 
         isHighlight: false, 
+        isRemitido: false,
+        remitidoComment: '',
         entryDate: new Date().toISOString().split('T')[0],
         specialty: 'MEDICINA INTERNA',
         deliveredBy: '',
@@ -769,6 +1169,10 @@ export function CensusView({ currentUser, isAdmin, isAuthenticated, doctors }: P
 
   const handleDeletePatient = async (id: string) => {
     setPatientToDelete(id);
+  };
+
+  const handlePrint = () => {
+    window.print();
   };
 
   const executeHandover = async () => {
@@ -788,24 +1192,14 @@ export function CensusView({ currentUser, isAdmin, isAuthenticated, doctors }: P
       
       const driveFileName = `ENTREGA_${filterSection === 'all' ? 'TOTAL' : filterSection.replace(/\//g, '-')}_${jornadaStr}_${day}-${monthPrefix}-${year}`;
       const timeStr = `${now.getHours().toString().padStart(2, '0')}-${now.getMinutes().toString().padStart(2, '0')}`;
-      const fileName = `${driveFileName}_${timeStr}.xlsx`;
       
       let driveLink = '';
       try {
         setIsSyncing(true);
         // Sync to Drive
         const folderId = await GoogleDriveService.getOrCreateDayJornadaFolder(year, month, day, jornadaStr);
-        const spreadsheetId = await GoogleDriveService.findOrCreateSheet(fileName, folderId);
         
-        const values = [
-          ['CAMA', 'PACIENTE', 'SECCION', 'DIAGNOSTICOS', 'MANEJO', 'PENDIENTES', 'ESPECIALIDAD', 'ENTREGA', 'RECIBE', 'ACTUALIZADO'],
-          ...filteredPatients.map(p => [
-            p.bed, p.name, p.section, p.diagnoses, p.managementPlan, p.pendientes, p.specialty, handoverSender || 'N/A', handoverReceiver, new Date(p.updatedAt || Date.now()).toISOString()
-          ])
-        ];
-        await GoogleDriveService.updateSheetValues(spreadsheetId, 'Sheet1!A1', values);
-        
-        // Create matching Google Doc
+        // Create Google Doc
         const docFileName = `${driveFileName}_${timeStr}`;
         const docId = await GoogleDriveService.findOrCreateGoogleDoc(docFileName, folderId);
         const docText = `==================================================\n` +
@@ -851,7 +1245,7 @@ export function CensusView({ currentUser, isAdmin, isAuthenticated, doctors }: P
       window.open(`https://wa.me/573173683886?text=${encodedMsg}`, '_blank');
       
       // Trigger Excel download with formal headers as backup
-      exportToExcel(fileName);
+      exportToExcel(`${driveFileName}_${timeStr}.xlsx`);
       
       setShowHandoverModal(false);
       setHandoverReceiver('');
@@ -894,7 +1288,8 @@ export function CensusView({ currentUser, isAdmin, isAuthenticated, doctors }: P
     .sort((a, b) => a.bed.localeCompare(b.bed, undefined, {numeric: true}));
 
   return (
-    <div className="flex flex-col h-full bg-slate-100">
+    <>
+      <div className="flex flex-col h-full bg-slate-100 print:hidden">
       {/* Toast Notification */}
       <AnimatePresence>
         {showSyncSuccessToast && (
@@ -922,7 +1317,7 @@ export function CensusView({ currentUser, isAdmin, isAuthenticated, doctors }: P
         <div className="relative z-10 flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
           <div>
             <h2 className="text-2xl md:text-3xl font-black flex items-center gap-3 tracking-tighter">
-              <ClipboardList className="w-8 h-8 text-emerald-300" /> ENTREGA DE TURNOS
+              <ClipboardList className="w-8 h-8 text-emerald-300" /> CENSO HOSPITALARIO
             </h2>
             <div className="flex flex-wrap items-center gap-2 mt-1">
               {syncStatus === 'Sincronizado' && (
@@ -979,6 +1374,8 @@ export function CensusView({ currentUser, isAdmin, isAuthenticated, doctors }: P
                 setFormData({ 
                   section: filterSection === 'all' ? SECTIONS[0] : filterSection, 
                   isHighlight: false, 
+                  isRemitido: false,
+                  remitidoComment: '',
                   entryDate: new Date().toISOString().split('T')[0],
                   specialty: 'MEDICINA INTERNA',
                   deliveredBy: '',
@@ -1014,6 +1411,12 @@ export function CensusView({ currentUser, isAdmin, isAuthenticated, doctors }: P
               className="flex-1 md:flex-none bg-sky-500 text-white px-4 py-2.5 rounded-2xl font-black text-[10px] uppercase flex items-center justify-center gap-2 hover:bg-sky-400 transition-all shadow-lg"
             >
               <Share2 className="w-4 h-4" /> Entregar Turno
+            </button>
+            <button 
+              onClick={handlePrint}
+              className="flex-1 md:flex-none bg-emerald-600 text-white px-4 py-2.5 rounded-2xl font-black text-[10px] uppercase flex items-center justify-center gap-2 hover:bg-emerald-500 transition-all shadow-lg active:scale-95"
+            >
+              <Printer className="w-4 h-4 text-white" /> Imprimir Censo
             </button>
             <button 
               onClick={() => setViewMode(viewMode === 'grid' ? 'table' : 'grid')}
@@ -1060,22 +1463,29 @@ export function CensusView({ currentUser, isAdmin, isAuthenticated, doctors }: P
                   initial={{ opacity: 0, y: 10 }}
                   animate={{ opacity: 1, y: 0 }}
                   exit={{ opacity: 0, scale: 0.9 }}
-                  className={`group bg-white rounded-3xl p-5 shadow-sm border-2 transition-all hover:shadow-xl hover:-translate-y-1 ${patient.isHighlight ? 'border-amber-400 bg-amber-50 ring-2 ring-amber-400/20 shadow-amber-900/5' : 'border-white hover:border-emerald-100'}`}
+                  className={`group bg-white rounded-3xl p-5 shadow-sm border-2 transition-all hover:shadow-xl hover:-translate-y-1 ${patient.isHighlight || patient.isRemitido ? 'border-amber-400 bg-amber-50 ring-2 ring-amber-400/20 shadow-amber-900/5' : 'border-white hover:border-emerald-100'}`}
                 >
                   <div className="flex justify-between items-start mb-4">
                     <div className="flex items-center gap-3">
-                      <div className={`w-14 h-14 rounded-2xl flex items-center justify-center font-black text-xl shadow-inner ${patient.isHighlight ? 'bg-amber-400 text-white' : 'bg-emerald-100 text-emerald-700'}`}>
+                      <div className={`w-14 h-14 rounded-2xl flex items-center justify-center font-black text-xl shadow-inner ${patient.isHighlight || patient.isRemitido ? 'bg-amber-400 text-white' : 'bg-emerald-100 text-emerald-700'}`}>
                         {patient.bed}
                       </div>
                       <div>
-                        <h4 className="font-black text-slate-800 text-base leading-none mb-1">{patient.name}</h4>
+                        <h4 className="font-black text-slate-800 text-base leading-none mb-1">
+                          {patient.name}
+                          {patient.isRemitido && (
+                            <span className="ml-2 inline-block bg-amber-200 text-amber-950 font-black text-[8px] uppercase tracking-wider px-2 py-0.5 rounded shadow-sm">
+                              REMITIDO
+                            </span>
+                          )}
+                        </h4>
                         <div className="flex flex-wrap items-center gap-2">
                           <span className="text-[9px] font-black uppercase text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded-lg border border-emerald-100">{patient.eps}</span>
                           <span className="text-[9px] font-mono text-slate-400">{patient.age} • Ingreso: {patient.entryDate}</span>
                         </div>
                       </div>
                     </div>
-                    {patient.isHighlight && (
+                    {(patient.isHighlight || patient.isRemitido) && (
                       <div className="bg-amber-500 text-white p-1.5 rounded-xl shadow-lg ring-4 ring-amber-100 animate-pulse">
                         <AlertCircle className="w-4 h-4" />
                       </div>
@@ -1103,12 +1513,21 @@ export function CensusView({ currentUser, isAdmin, isAuthenticated, doctors }: P
                       </div>
                     )}
 
-                    {patient.pendientes && (
-                      <div className={`p-3 rounded-2xl border ${patient.isHighlight ? 'bg-amber-100 border-amber-300' : 'bg-slate-100 border-slate-200'}`}>
-                        <div className={`text-[8px] font-black uppercase tracking-widest mb-1 ${patient.isHighlight ? 'text-amber-700' : 'text-slate-500'}`}>Pendientes Críticos</div>
-                        <p className={`text-xs font-black ${patient.isHighlight ? 'text-amber-900 underline' : 'text-slate-700'}`}>{patient.pendientes}</p>
-                      </div>
-                    )}
+                     {(patient.pendientes || patient.remitidoComment) && (
+                       <div className={`p-3 rounded-2xl border ${patient.isHighlight || patient.isRemitido ? 'bg-amber-100 border-amber-300' : 'bg-slate-100 border-slate-200'}`}>
+                         <div className={`text-[8px] font-black uppercase tracking-widest mb-1 ${patient.isHighlight || patient.isRemitido ? 'text-amber-700' : 'text-slate-500'}`}>
+                           {patient.isRemitido ? 'Estado / Remisión & Pendientes' : 'Pendientes Críticos'}
+                         </div>
+                         {patient.pendientes && (
+                           <p className={`text-xs font-black ${patient.isHighlight || patient.isRemitido ? 'text-amber-900 underline' : 'text-slate-700'}`}>{patient.pendientes}</p>
+                         )}
+                         {patient.remitidoComment && (
+                           <div className="mt-1 bg-amber-200/50 border border-amber-300 text-amber-950 font-black text-[10px] p-2 rounded-lg uppercase">
+                             📢 {patient.remitidoComment}
+                           </div>
+                         )}
+                       </div>
+                     )}
                   </div>
 
                   <div className="flex justify-between items-center mt-5 pt-4 border-t border-slate-100">
@@ -1136,43 +1555,218 @@ export function CensusView({ currentUser, isAdmin, isAuthenticated, doctors }: P
             </AnimatePresence>
           </div>
         ) : (
-          /* Table View optimized for high-density census */
+          /* Table View optimized for high-density census with real-time Excel-style inline editing */
           <div className="bg-white rounded-[32px] shadow-xl overflow-hidden border border-slate-200">
+            {/* Inline edit option bar */}
+            <div className="bg-slate-50 border-b border-slate-200 px-6 py-4 flex flex-wrap justify-between items-center gap-4 no-print">
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-black uppercase text-slate-500">📝 Edición en Línea (Google Docs Style):</span>
+                <button 
+                  onClick={() => setIsInlineEditEnabled(!isInlineEditEnabled)}
+                  className={`px-3 py-1.5 rounded-full text-[10px] font-black uppercase tracking-wider transition-all border ${isInlineEditEnabled ? 'bg-[#0f5132] text-white border-[#0f5132] shadow-sm' : 'bg-slate-100 text-slate-400 border-slate-200 hover:bg-slate-200'}`}
+                >
+                  {isInlineEditEnabled ? 'Activado (Clic en Celda para Editar)' : 'Desactivado (Solo Lectura)'}
+                </button>
+              </div>
+              <div className="text-[10px] font-bold text-slate-400 uppercase tracking-widest bg-white py-1 px-3 rounded-full border border-slate-200 flex items-center gap-1.5">
+                <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></div>
+                Sincronización Automática con Drive & Nube
+              </div>
+            </div>
+
             <div className="overflow-x-auto overflow-y-auto max-h-[70vh]">
               <table className="w-full text-left border-collapse table-auto min-w-[1200px]">
                 <thead>
                   <tr className="bg-slate-800 text-white uppercase text-[8px] font-black tracking-widest sticky top-0 z-20">
-                    <th className="px-4 py-4 w-16">Cama</th>
-                    <th className="px-4 py-4 w-24">Fecha</th>
-                    <th className="px-4 py-4 w-48">Paciente / Edad / EPS</th>
-                    <th className="px-4 py-4 truncate max-w-xs">Diagnóstico</th>
-                    <th className="px-4 py-4 truncate max-w-xs">Manejo</th>
-                    <th className="px-4 py-4 truncate max-w-xs">Paraclínicos</th>
-                    <th className="px-4 py-4 truncate max-w-xs">Pendientes</th>
-                    <th className="px-4 py-4 w-32 text-center">Especialidad</th>
-                    <th className="px-4 py-4 w-24 sticky right-0 bg-slate-800 shadow-l shadow-slate-800">Acciones</th>
+                    <th className="px-4 py-4 w-16 text-center">Cama</th>
+                    <th className="px-4 py-4 w-28 text-center">Fecha</th>
+                    <th className="px-4 py-4 w-52">Paciente / Edad / EPS</th>
+                    <th className="px-4 py-4">Diagnóstico</th>
+                    <th className="px-4 py-4">Manejo Plan de Tratamiento</th>
+                    <th className="px-4 py-4">Resultados Paraclínicos</th>
+                    <th className="px-4 py-4">Pendientes Críticos</th>
+                    <th className="px-4 py-4 w-36 text-center">Especialidad</th>
+                    <th className="px-4 py-4 w-24 sticky right-0 bg-slate-800 shadow-l shadow-slate-800 text-center">Acciones</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
                   {filteredPatients.map(p => (
-                    <tr key={p.id} className={`group hover:bg-emerald-50/50 transition-colors ${p.isHighlight ? 'bg-amber-100/50' : ''}`}>
-                      <td className="px-4 py-3 font-black text-emerald-700 text-center bg-slate-50/50 group-hover:bg-emerald-100/50">{p.bed}</td>
-                      <td className="px-4 py-3 text-[10px] font-mono whitespace-nowrap">{p.entryDate}</td>
-                      <td className="px-4 py-3">
-                        <div className="font-bold text-xs text-slate-800 leading-tight mb-1">{p.name}</div>
-                        <div className="text-[10px] text-slate-500">{p.age} • {p.eps}</div>
+                    <tr key={p.id} className={`group hover:bg-emerald-50/50 transition-colors ${p.isHighlight || p.isRemitido ? 'bg-yellow-105' : ''}`}>
+                      <td className="px-4 py-3 text-center bg-slate-50/50 group-hover:bg-emerald-100/30">
+                        <InlineCell 
+                          patient={p} 
+                          field="bed" 
+                          placeholder="Cama"
+                          className="text-center font-black" 
+                          viewClassName="text-center font-black text-emerald-700 text-xs" 
+                        />
                       </td>
-                      <td className="px-4 py-3 text-[10px] text-slate-600 leading-relaxed font-semibold max-w-xs">{p.diagnoses}</td>
-                      <td className="px-4 py-3 text-[10px] text-slate-600 line-clamp-3 italic whitespace-pre-wrap">{p.managementPlan}</td>
-                      <td className="px-4 py-3 text-[10px] text-blue-800 font-medium max-w-xs">{p.paraclinicals}</td>
-                      <td className={`px-4 py-3 text-[10px] font-black max-w-xs ${p.isHighlight ? 'text-rose-600' : 'text-slate-500'}`}>{p.pendientes}</td>
                       <td className="px-4 py-3 text-center">
-                        <span className="text-[8px] bg-slate-100 p-1.5 rounded-lg group-hover:bg-white">{p.specialty || 'General'}</span>
+                        <InlineCell 
+                          patient={p} 
+                          field="entryDate" 
+                          type="date"
+                          placeholder="Fecha"
+                          className="text-center font-mono" 
+                          viewClassName="text-center text-[10px] font-mono whitespace-nowrap min-w-[80px]" 
+                        />
+                      </td>
+                      <td className="px-4 py-3">
+                        <div className="flex flex-col gap-1 text-left">
+                          <InlineCell 
+                            patient={p} 
+                            field="name" 
+                            placeholder="Nombre Paciente"
+                            viewClassName="font-extrabold text-xs text-slate-800 uppercase tracking-tight leading-none" 
+                          />
+                          <div className="flex flex-wrap items-center gap-1.5 text-[9px] text-slate-400 font-bold uppercase mt-0.5">
+                            <InlineCell 
+                              patient={p} 
+                              field="age" 
+                              placeholder="Edad"
+                              viewClassName="text-[9px] text-slate-500 font-black" 
+                            />
+                            <span>•</span>
+                            <InlineCell 
+                              patient={p} 
+                              field="eps" 
+                              placeholder="EPS"
+                              viewClassName="text-[9px] text-emerald-600 bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-100/50 font-black" 
+                            />
+                          </div>
+                          {p.isRemitido && (
+                            <span className="self-start mt-1.5 inline-block bg-amber-200 text-amber-950 font-black text-[8px] uppercase tracking-wider px-1.5 py-0.5 rounded">
+                              Remitido
+                            </span>
+                          )}
+                        </div>
+                      </td>
+                      <td className="px-4 py-3">
+                        <InlineCell 
+                          patient={p} 
+                          field="diagnoses" 
+                          type="textarea"
+                          placeholder="Diagnóstico..."
+                          viewClassName="text-[10px] text-slate-600 leading-relaxed font-bold max-w-xs" 
+                        />
+                      </td>
+                      <td className="px-4 py-3">
+                        <InlineCell 
+                          patient={p} 
+                          field="managementPlan" 
+                          type="textarea"
+                          placeholder="Manejo plan..."
+                          viewClassName="text-[10px] text-slate-600 italic whitespace-pre-wrap max-w-xs leading-relaxed" 
+                        />
+                      </td>
+                      <td className="px-4 py-3">
+                        <InlineCell 
+                          patient={p} 
+                          field="paraclinicals" 
+                          type="textarea"
+                          placeholder="Paraclínicos..."
+                          viewClassName="text-[10px] text-blue-900 font-medium max-w-xs font-mono leading-tight" 
+                        />
+                      </td>
+                      <td className="px-4 py-3 text-[10px] max-w-xs">
+                        <InlineCell 
+                          patient={p} 
+                          field="pendientes" 
+                          type="textarea"
+                          placeholder="Pendientes..."
+                          viewClassName={`font-bold text-[10px] leading-tight ${p.isHighlight || p.isRemitido ? 'text-amber-900 font-black underline' : 'text-slate-500'}`} 
+                        />
+                        {p.isHighlight || p.isRemitido ? (
+                          <div className="mt-2 flex gap-1">
+                            <button 
+                              onClick={async () => {
+                                const pRef = doc(db, 'census', p.id);
+                                await updateDoc(pRef, { isHighlight: !p.isHighlight });
+                              }}
+                              className={`text-[8px] font-black rounded px-1.5 py-0.5 ${p.isHighlight ? 'bg-amber-500 text-white shadow-sm' : 'bg-amber-100 text-amber-800 hover:bg-amber-200'}`}
+                            >
+                              {p.isHighlight ? '⚙️ ALERTA ON' : '⚙️ ALERTA OFF'}
+                            </button>
+                            <button 
+                              onClick={async () => {
+                                const pRef = doc(db, 'census', p.id);
+                                await updateDoc(pRef, { isRemitido: !p.isRemitido });
+                              }}
+                              className={`text-[8px] font-black rounded px-1.5 py-0.5 ${p.isRemitido ? 'bg-[#0f5132] text-white shadow-sm' : 'bg-emerald-100 text-emerald-800 hover:bg-emerald-200'}`}
+                            >
+                              {p.isRemitido ? '🏥 REMITIDO' : '🏥 REMITIR'}
+                            </button>
+                          </div>
+                        ) : (
+                          <div className="mt-1.5 opacity-0 group-hover:opacity-100 transition-opacity flex gap-1">
+                            <button 
+                              onClick={async () => {
+                                const pRef = doc(db, 'census', p.id);
+                                await updateDoc(pRef, { isHighlight: true });
+                              }}
+                              className="text-[8px] font-black rounded px-1.5 py-0.5 bg-amber-100 text-amber-800 hover:bg-amber-200"
+                            >
+                              🔔 MARCAR ALERTA
+                            </button>
+                            <button 
+                              onClick={async () => {
+                                const pRef = doc(db, 'census', p.id);
+                                await updateDoc(pRef, { isRemitido: true });
+                              }}
+                              className="text-[8px] font-black rounded px-1.5 py-0.5 bg-emerald-100 text-emerald-800 hover:bg-emerald-200"
+                            >
+                              🏥 MARCAR REMITIDO
+                            </button>
+                          </div>
+                        )}
+                        {p.isRemitido && (
+                          <div className="mt-2">
+                            <InlineCell 
+                              patient={p} 
+                              field="remitidoComment" 
+                              placeholder="Falta comentar remisión..."
+                              viewClassName="text-[8px] font-black uppercase bg-amber-100 border border-amber-200 px-2 py-1 rounded inline-block shadow-inner" 
+                            />
+                          </div>
+                        )}
+                      </td>
+                      <td className="px-4 py-3 text-center w-36">
+                        {activeCell?.id === p.id && activeCell?.field === 'specialty' ? (
+                          <select
+                            value={activeCell.value || ''}
+                            onChange={async (e) => {
+                              const val = e.target.value;
+                              const pRef = doc(db, 'census', p.id);
+                              await updateDoc(pRef, { 
+                                specialty: val,
+                                updatedAt: Date.now(),
+                                updatedBy: currentUser?.nombre || 'SISTEMA'
+                              });
+                              setActiveCell(null);
+                            }}
+                            onBlur={() => setActiveCell(null)}
+                            className="bg-amber-50 p-1.5 border-2 border-amber-400 rounded-xl text-[9px] font-black outline-none focus:ring-1 focus:ring-amber-500 w-full animate-fadeIn"
+                            autoFocus
+                          >
+                            <option value="MEDICINA INTERNA">MEDICINA INTERNA</option>
+                            <option value="PEDIATRIA">PEDIATRIA</option>
+                            <option value="GINECOOBSTETRICIA">GINECOOBSTETRICIA</option>
+                            <option value="CIRUGIA GENERAL">CIRUGIA GENERAL</option>
+                            <option value="MEDICINA GENERAL">MEDICINA GENERAL</option>
+                          </select>
+                        ) : (
+                          <div
+                            onClick={() => setActiveCell({ id: p.id, field: 'specialty', value: p.specialty || '' })}
+                            className="cursor-pointer font-black text-[9px] uppercase tracking-wider text-slate-800 inline-block"
+                          >
+                            <span className="bg-slate-100 p-1.5 rounded-lg border border-slate-200 hover:bg-white hover:ring-2 hover:ring-emerald-400/20 transition-all">{p.specialty || 'MEDICINA INTERNA'}</span>
+                          </div>
+                        )}
                       </td>
                       <td className="px-4 py-3 sticky right-0 bg-white/90 group-hover:bg-emerald-50/90 shadow-l text-center">
-                         <div className="flex justify-center gap-1">
-                            <button onClick={() => { setEditingPatient(p); setFormData(p); setIsAddingPatient(true); }} className="p-1.5 text-slate-400 hover:text-emerald-600"><Edit3 className="w-3.5 h-3.5" /></button>
-                            <button onClick={() => handleDeletePatient(p.id)} className="p-1.5 text-slate-400 hover:text-rose-600"><Trash2 className="w-3.5 h-3.5" /></button>
+                         <div className="flex justify-center gap-1.5">
+                            <button onClick={() => { setEditingPatient(p); setFormData(p); setIsAddingPatient(true); }} className="p-1.5 bg-slate-100 text-slate-500 hover:bg-[#0f5132] hover:text-white rounded-lg transition-transform hover:scale-110 active:scale-90" title="Editar en Ventana"><Edit3 className="w-3.5 h-3.5" /></button>
+                            <button onClick={() => handleDeletePatient(p.id)} className="p-1.5 bg-slate-100 text-slate-400 hover:bg-rose-600 hover:text-white rounded-lg transition-transform hover:scale-110 active:scale-90" title="Eliminar Paciente"><Trash2 className="w-3.5 h-3.5" /></button>
                          </div>
                       </td>
                     </tr>
@@ -1289,6 +1883,33 @@ export function CensusView({ currentUser, isAdmin, isAuthenticated, doctors }: P
               </div>
 
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div className="flex items-center gap-4 bg-amber-50 p-6 rounded-3xl border-2 border-amber-200 shadow-inner group">
+                  <input 
+                    type="checkbox" 
+                    id="isRemitido" 
+                    checked={formData.isRemitido || false}
+                    onChange={(e) => setFormData({...formData, isRemitido: e.target.checked})}
+                    className="w-8 h-8 accent-amber-500 cursor-pointer"
+                  />
+                  <label htmlFor="isRemitido" className="text-xs font-black text-amber-950 uppercase cursor-pointer select-none">
+                    Marcar como Remitido (Fondo Amarillo)
+                    <p className="text-[9px] font-bold text-amber-600/60 leading-none mt-0.5 tracking-tighter">MARCA EL PACIENTE COMO PROCESO DE REMISIÓN</p>
+                  </label>
+                </div>
+
+                <div className="flex flex-col bg-slate-55 p-4 rounded-3xl border-2 border-slate-100 shadow-inner bg-slate-50">
+                  <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest block mb-1">Comentario de Estado / Remisión</label>
+                  <input 
+                    type="text"
+                    className="w-full bg-white border-2 border-slate-100 p-3 rounded-xl font-bold text-slate-800 placeholder:font-normal placeholder:text-slate-400 outline-none focus:border-amber-400 transition-all text-xs"
+                    value={formData.remitidoComment || ''}
+                    onChange={(e) => setFormData({...formData, remitidoComment: e.target.value.toUpperCase()})}
+                    placeholder="E.G. PDTE SALIDA, REMISIÓN, ETC."
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
                   <label className="text-[10px] font-black text-slate-400 uppercase ml-3 mb-1 block">Médico que Entrega (Firma)</label>
                   <input 
@@ -1390,6 +2011,13 @@ export function CensusView({ currentUser, isAdmin, isAuthenticated, doctors }: P
             </div>
 
             <div className="p-8 bg-slate-50 border-t border-slate-200 flex gap-4">
+              <button 
+                onClick={handlePrint}
+                className="flex-1 bg-slate-800 text-white p-5 rounded-3xl font-black uppercase text-xs hover:bg-slate-700 active:scale-95 transition-all shadow-xl shadow-slate-800/20 flex justify-center items-center gap-2"
+              >
+                <Printer className="w-4 h-4 text-emerald-400" />
+                Imprimir Reporte
+              </button>
               <button 
                 onClick={executeHandover}
                 disabled={!handoverReceiver.trim() || !handoverSender.trim()}
@@ -1582,9 +2210,25 @@ export function CensusView({ currentUser, isAdmin, isAuthenticated, doctors }: P
 
                             if (isSheet) {
                               const values = [
-                                ['CAMA', 'PACIENTE', 'SECCION', 'DIAGNOSTICOS', 'MANEJO', 'PENDIENTES', 'ESPECIALIDAD', 'MEDICO_ENTREGA', 'MEDICO_RECIBE', 'ACTUALIZADO_POR', 'FECHA_ACTUALIZACION'],
+                                ['CAMA', 'FECHA_INGRESO', 'PACIENTE', 'EDAD', 'EPS', 'SECCION', 'DIAGNOSTICO', 'MANEJO', 'PARACLINICOS', 'PENDIENTE', 'REMITIDO', 'ESTADO_REMITIDO', 'ESPECIALIDAD', 'MEDICO_ENTREGA', 'MEDICO_RECIBE', 'ACTUALIZADO_POR', 'FECHA_ACTUALIZACION'],
                                 ...freshPatients.map(p => [
-                                  p.bed, p.name, p.section, p.diagnoses, p.managementPlan, p.pendientes, p.specialty, p.deliveredBy || '', p.receivedBy || '', p.updatedBy || '', new Date(p.updatedAt || Date.now()).toISOString()
+                                  p.bed || 'S/C', 
+                                  p.entryDate || '', 
+                                  p.name || '', 
+                                  p.age || '', 
+                                  p.eps || '', 
+                                  p.section || 'HOSPITALIZACION', 
+                                  p.diagnoses || '', 
+                                  p.managementPlan || '', 
+                                  p.paraclinicals || '', 
+                                  p.pendientes || '', 
+                                  p.isRemitido ? 'SI' : 'NO', 
+                                  p.remitidoComment || '', 
+                                  p.specialty || '', 
+                                  p.deliveredBy || '', 
+                                  p.receivedBy || '', 
+                                  p.updatedBy || '', 
+                                  new Date(p.updatedAt || Date.now()).toISOString()
                                 ]).sort((a,b) => String(a[0]).localeCompare(String(b[0])))
                               ];
                               await GoogleDriveService.updateSheetValues(selectedDriveFile.id, 'Sheet1!A1', values);
@@ -1736,5 +2380,106 @@ export function CensusView({ currentUser, isAdmin, isAuthenticated, doctors }: P
         </div>
       )}
     </div>
+
+    {/* PRINT VIEW SECTION - DESIGNED EXACTLY AS HOSPITAL CENSUS GRID */}
+    <div id="printable-census-area" className="hidden print:block w-full bg-white text-black p-4">
+      {/* Printable Census Header */}
+      <div className="flex justify-between items-center border-b-4 border-double border-slate-900 pb-4 mb-6">
+        <div className="flex items-center gap-4">
+          <HospitalLogo className="w-16 h-20 shrink-0 text-[#0f5132]" />
+          <div>
+            <h1 className="text-xl font-extrabold uppercase tracking-tight text-slate-950">
+              CENSO ACTUALIZADO: {filterSection === 'all' ? 'TODO EL ESTABLECIMIENTO' : filterSection}
+            </h1>
+            <p className="text-[10px] font-black text-[#0f5132] uppercase tracking-wide">
+              HOSPITAL DEPARTAMENTAL SAN ANTONIO - ROLDANILLO E.S.E.
+            </p>
+            <p className="text-[9px] font-bold text-slate-500 uppercase tracking-widest mt-0.5">
+              IPS DE MEDIANA COMPLEJIDAD • SERVIR CON EXCELENCIA
+            </p>
+          </div>
+        </div>
+        <div className="text-right text-[10px] font-semibold leading-relaxed">
+          <p className="font-extrabold text-[12px] text-slate-900">Fecha Impresión: {new Date().toLocaleDateString('es-CO')} {new Date().toLocaleTimeString('es-CO')}</p>
+          <p className="font-bold text-[#0f5132] bg-emerald-50 px-2.5 py-0.5 rounded border border-emerald-100 mt-1 uppercase inline-block">
+            {filterSection === 'all' ? 'CENSO GENERAL' : `ÁREA: ${filterSection}`}
+          </p>
+          {handoverSender && (
+            <p className="font-bold text-slate-800 mt-1 whitespace-pre-wrap max-w-xs break-words ml-auto leading-tight">
+              Entrega: {getDoctorFullLabel(handoverSender)} {handoverReceiver && `\nRecibe: ${getDoctorFullLabel(handoverReceiver)}`}
+            </p>
+          )}
+        </div>
+      </div>
+
+      {/* Printable high-density grid matching requested style */}
+      <table className="w-full text-left border-collapse table-fixed text-[10px] border-2 border-slate-900">
+        <thead>
+          <tr className="bg-slate-100 text-[8px] font-black uppercase tracking-wider text-slate-900 border-b-2 border-slate-900">
+            <th className="px-2 py-3 border border-slate-400 w-[6%] text-center shrink-0">CAMA</th>
+            <th className="px-2 py-3 border border-slate-400 w-[9%] text-center">FECHA</th>
+            <th className="px-3 py-3 border border-slate-400 w-[18%]">NOMBRE</th>
+            <th className="px-3 py-3 border border-slate-400 w-[20%]">DIAGNOSTICO</th>
+            <th className="px-3 py-3 border border-slate-400 w-[18%]">MANEJO</th>
+            <th className="px-3 py-3 border border-slate-400 w-[12%]">PARACLINICOS</th>
+            <th className="px-3 py-3 border border-slate-400 w-[17%]">PENDIENTE</th>
+            <th className="px-2 py-3 border border-slate-400 w-[10%] text-center">ESPECIALIDAD</th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-slate-400">
+          {filteredPatients.map(p => {
+            const isRowYellow = p.isHighlight || p.isRemitido;
+            return (
+              <tr key={p.id} className={`align-top ${isRowYellow ? 'bg-yellow-100 print:bg-yellow-101' : ''}`}>
+                <td className="px-2 py-3 border border-slate-400 text-center font-black text-xs">{p.bed || 'S/C'}</td>
+                <td className="px-2 py-3 border border-slate-400 text-center text-[9px] font-mono whitespace-nowrap">{p.entryDate || ''}</td>
+                <td className="px-3 py-3 border border-slate-400 font-black leading-tight text-slate-900">
+                  <p className="text-[10px]">{p.name || ''}</p>
+                  <p className="text-[8px] font-bold text-slate-500 mt-1 uppercase tracking-tight">{p.age || 'S/E'} • {p.eps || 'S/A'}</p>
+                </td>
+                <td className="px-3 py-3 border border-slate-400 font-bold leading-normal text-[10px] whitespace-pre-wrap">{p.diagnoses || ''}</td>
+                <td className="px-3 py-3 border border-slate-400 italic text-[9.5px] leading-relaxed whitespace-pre-wrap">{p.managementPlan || ''}</td>
+                <td className="px-3 py-3 border border-slate-400 leading-normal text-[9.5px] font-mono whitespace-pre-wrap">{p.paraclinicals || '-'}</td>
+                <td className="px-3 py-3 border border-slate-400 font-extrabold text-[10px]">
+                  {p.isRemitido && (
+                    <div className="bg-yellow-200 border border-yellow-400 text-yellow-950 text-[8px] font-black uppercase px-2 py-0.5 rounded mb-1.5 text-center font-mono animate-none">
+                      ⚠️ REMISION
+                    </div>
+                  )}
+                  <div className="leading-snug">{p.pendientes || 'Ninguno'}</div>
+                  {p.remitidoComment && (
+                    <div className="text-[8px] font-black text-blue-900 border-t border-slate-400 pt-1 mt-1.5 bg-amber-200/40 p-1 rounded">
+                      ESTADO: {p.remitidoComment}
+                    </div>
+                  )}
+                </td>
+                <td className="px-2 py-3 border border-slate-400 text-center font-black text-[9px] text-slate-800 tracking-tight">{p.specialty || ''}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+
+      {/* Signatures block for clinical handover authenticity */}
+      {handoverSender && (
+        <div className="mt-12 pt-8 border-t border-slate-300 page-break-inside-avoid">
+          <div className="grid grid-cols-2 gap-12 max-w-4xl mx-auto">
+            <div className="text-center">
+              <div className="h-16 border-b border-dashed border-slate-400 mb-2"></div>
+              <p className="text-[10px] font-black uppercase text-slate-800">Firma Médico Entrega</p>
+              <p className="text-[9px] font-bold text-slate-500 mt-1">{getDoctorFullLabel(handoverSender)}</p>
+            </div>
+            {handoverReceiver && (
+              <div className="text-center">
+                <div className="h-16 border-b border-dashed border-slate-400 mb-2"></div>
+                <p className="text-[10px] font-black uppercase text-slate-800">Firma Médico Recibe</p>
+                <p className="text-[9px] font-bold text-slate-500 mt-1">{getDoctorFullLabel(handoverReceiver)}</p>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+    </>
   );
 }

@@ -128,6 +128,7 @@ import { CensusView } from './components/CensusView';
 import { ProductivityStatsView } from './components/ProductivityStatsView';
 import { AdminToolbox } from './components/AdminToolbox';
 import { CommitteeView } from './components/CommitteeView';
+import { HospitalLogo } from './components/HospitalLogo';
 
 export const sortDoctors = (a: Doctor, b: Doctor) => {
   if (a.order !== undefined && b.order !== undefined) {
@@ -476,6 +477,7 @@ export default function App() {
   ];
 
   const [fbUser, setFbUser] = useState<any>(null);
+  const [isGoogleAuthing, setIsGoogleAuthing] = useState(false);
 
   const sendEmailNotification = async (to: string, doctorName: string, requestDetails: any, status: 'approved' | 'rejected') => {
     try {
@@ -964,11 +966,13 @@ export default function App() {
 
   // -- Auth --
   const handleGoogleLogin = async () => {
+    if (isGoogleAuthing) return;
     const provider = new GoogleAuthProvider();
     provider.addScope('https://www.googleapis.com/auth/drive');
     provider.addScope('https://www.googleapis.com/auth/spreadsheets');
     
     try {
+      setIsGoogleAuthing(true);
       const result = await signInWithPopup(auth, provider);
       // Optional: Store the credential for later API calls if needed
       const credential = GoogleAuthProvider.credentialFromResult(result);
@@ -987,9 +991,17 @@ export default function App() {
           type: 'error' 
         });
         alert(`⚠️ ERROR DE SEGURIDAD DE FIREBASE:\n\nEl dominio "${currentDomain}" no está en la lista blanca de tu proyecto.\n\nSI NO TIENES ACCESO A LA CONSOLA:\nSolicita al administrador del sistema que añada los siguientes dominios a "Authentication > Settings > Authorized Domains":\n\n1. ${currentDomain}\n2. ais-pre-xlref7u3vswxjgd2ec2l7j-500854713267.us-west2.run.app\n\nSi tú eres el administrador, asegúrate de estar logueado con la cuenta correcta en Firebase.`);
+      } else if (err.code === 'auth/cancelled-popup-request') {
+        console.warn("Google Login popup request was cancelled or superseded in App.tsx.");
+      } else if (err.code === 'auth/popup-closed-by-user') {
+        console.warn("User closed the Google login popup inside App.tsx.");
+        setNotification({ message: "La ventana de inicio de sesión se cerró", type: 'error' });
+        setTimeout(() => setNotification(null), 3000);
       } else {
         alert("Error al iniciar sesión con Google: " + (err.message || String(err)));
       }
+    } finally {
+      setIsGoogleAuthing(false);
     }
   };
 
@@ -3268,9 +3280,7 @@ Usa un tono directivo, formal y conciso en español. Solo usa negritas y viñeta
           className="bg-white p-6 md:p-10 rounded-[32px] border border-emerald-100 w-full max-w-md text-center shadow-2xl relative my-4 md:my-8"
         >
           <div className="flex justify-center mb-6">
-            <div className="bg-emerald-50 p-4 rounded-full border border-emerald-100">
-               <ShieldCheck className="w-10 h-10 text-emerald-600" />
-            </div>
+            <HospitalLogo className="w-32 h-36 hover:scale-[1.02] transition-transform" />
           </div>
           <h2 className="text-2xl font-bold text-emerald-700 mb-1 uppercase tracking-widest">COORDINACION MEDICA HDSAR</h2>
           <p className="text-sm font-bold text-emerald-600 uppercase tracking-widest mb-8">Servir con Excelencia</p>
@@ -3336,10 +3346,11 @@ Usa un tono directivo, formal y conciso en español. Solo usa negritas y viñeta
 
             <button 
               onClick={handleGoogleLogin}
-              className="w-full bg-white border border-slate-200 text-slate-800 p-4 rounded-xl font-bold flex items-center justify-center gap-3 hover:bg-slate-50 transition-colors shadow-sm"
+              disabled={isGoogleAuthing}
+              className="w-full bg-white border border-slate-200 text-slate-800 p-4 rounded-xl font-bold flex items-center justify-center gap-3 hover:bg-slate-50 transition-colors shadow-sm disabled:opacity-50"
             >
               <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" className="w-5 h-5" alt="Google" />
-              CONTINUAR CON GOOGLE
+              {isGoogleAuthing ? "CONECTANDO..." : "CONTINUAR CON GOOGLE"}
             </button>
           </div>
           <p className="text-[10px] text-slate-500 mt-8 tracking-widest uppercase font-mono">Consolidado 2026</p>
@@ -3568,9 +3579,10 @@ Usa un tono directivo, formal y conciso en español. Solo usa negritas y viñeta
               <span>Atención: Ha entrado como Administrador Maestro pero no ha iniciado sesión con Google. Los cambios no se guardarán en la nube.</span>
               <button 
                 onClick={handleGoogleLogin}
-                className="bg-black text-white px-3 py-1 rounded-lg hover:bg-zinc-800 transition-colors"
+                disabled={isGoogleAuthing}
+                className="bg-black text-white px-3 py-1 rounded-lg hover:bg-zinc-800 transition-colors disabled:opacity-50"
               >
-                Vincular Google
+                {isGoogleAuthing ? "Conectando..." : "Vincular Google"}
               </button>
             </div>
           )}
@@ -3666,7 +3678,7 @@ Usa un tono directivo, formal y conciso en español. Solo usa negritas y viñeta
             {[
               { id: 'home', label: 'Dashboard', icon: ChevronRight },
               { id: 'turnos', label: 'Turnero Hospitalario', icon: Calendar },
-              { id: 'census', label: 'Entrega de Turnos', icon: ClipboardList },
+              { id: 'census', label: 'Censo Hospitalario', icon: ClipboardList },
               { id: 'committee', label: 'Comité H.C.', icon: FileCheck },
               { id: 'pic', label: 'Capacitaciones (PIC)', icon: BrainCircuit },
               { id: 'solicitudes', label: 'Solicitudes', icon: Send },

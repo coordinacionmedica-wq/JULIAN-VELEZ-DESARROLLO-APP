@@ -1,1 +1,67 @@
 @import "tailwindcss";
+
+/* HIGH-DENSITY PROFESSIONAL HOSPITAL PRINT STYLES */
+@media print {
+  /* Hide all generic elements, wrappers, sidebars and headers */
+  html, body {
+    background-color: #ffffff !important;
+    color: #000000 !important;
+    height: auto !important;
+    overflow: visible !important;
+    font-size: 10pt !important;
+    margin: 0 !important;
+    padding: 0 !important;
+  }
+
+  body * {
+    visibility: hidden;
+  }
+
+  /* Make only the censo table and its children visible */
+  #printable-census-area,
+  #printable-census-area * {
+    visibility: visible !important;
+  }
+
+  /* Position the table perfectly at the top left of the printable page */
+  #printable-census-area {
+    display: block !important;
+    position: absolute !important;
+    left: 0 !important;
+    top: 0 !important;
+    width: 100% !important;
+    margin: 0 !important;
+    padding: 10mm !important;
+    box-sizing: border-box !important;
+  }
+
+  /* Force background colors to print correctly (margins, highlights, alerts) */
+  * {
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+
+  table {
+    page-break-inside: auto !important;
+    width: 100% !important;
+    border-collapse: collapse !important;
+  }
+  
+  tr {
+    page-break-inside: avoid !important;
+    page-break-after: auto !important;
+  }
+  
+  thead {
+    display: table-header-group !important;
+  }
+  
+  tfoot {
+    display: table-footer-group !important;
+  }
+
+  /* Avoid cutting headers or titles */
+  h1, h2, h3, h4, .border-b-4 {
+    page-break-after: avoid !important;
+  }
+}
