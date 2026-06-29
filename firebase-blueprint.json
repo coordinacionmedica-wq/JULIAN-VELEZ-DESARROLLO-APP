@@ -91,7 +91,16 @@
         "calledBy": { "type": "string" },
         "terminationDateTime": { "type": "number" },
         "totalHours": { "type": "number" },
-        "timestamp": { "type": "number" }
+        "timestamp": { "type": "number" },
+        "activityType": { "type": "string" },
+        "textLibre": { "type": "string" },
+        "callDate": { "type": "string" },
+        "callTime": { "type": "string" },
+        "endDate": { "type": "string" },
+        "endTime": { "type": "string" },
+        "grossHours": { "type": "number" },
+        "deduction": { "type": "number" },
+        "netHours": { "type": "number" }
       }
     },
     "ThemeSettings": {

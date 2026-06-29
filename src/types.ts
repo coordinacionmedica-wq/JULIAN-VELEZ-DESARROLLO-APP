@@ -98,11 +98,24 @@ export interface RuralAvailability {
   diagnosis: string;
   acceptancePlace: string;
   calledBy: string;
+  calledById?: number;
   terminationDateTime: number;
   totalHours: number;
   timestamp: number;
   targetMonth: number;
   targetYear: number;
+  authorizedStatus?: 'pending' | 'signed' | 'rejected';
+  authorizerSignature?: string;
+  authorizedTimestamp?: number;
+  activityType?: string;
+  textLibre?: string;
+  callDate?: string;
+  callTime?: string;
+  endDate?: string;
+  endTime?: string;
+  grossHours?: number;
+  deduction?: number;
+  netHours?: number;
 }
 
 export interface AvailabilityCall {

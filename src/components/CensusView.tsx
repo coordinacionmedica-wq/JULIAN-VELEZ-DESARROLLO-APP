@@ -58,6 +58,125 @@ const SECTIONS = [
   "CIRUGIA"
 ];
 
+function overwriteDocPatientBlock(docText: string, updatedPatient: Patient): string {
+  // If the document is fundamentally empty or does not have standard separators,
+  // we can just format it completely.
+  if (!docText || !docText.includes('---')) {
+    return `==================================================================================================\n` +
+           `                              CENSO HOSPITALARIO - ENTREGA DE TURNOS\n` +
+           `==================================================================================================\n` +
+           `Fecha de Reporte: ${new Date().toLocaleString('es-CO')}\n` +
+           `Total de Pacientes: 1\n` +
+           `==================================================================================================\n\n` +
+           `--------------------------------------------------------------------------------------------------\n` +
+           `[ REGISTRO N° 1 - ENTREGA DE TURNO ]\n` +
+           `--------------------------------------------------------------------------------------------------\n` +
+           `Cama: ${updatedPatient.bed || 'S/C'}\n` +
+           `Fecha: ${updatedPatient.entryDate || ''}\n` +
+           `Paciente: ${updatedPatient.name || ''} (${updatedPatient.age || ''}) • EPS: ${updatedPatient.eps || ''}\n` +
+           `Especialidad: ${updatedPatient.specialty || ''}\n` +
+           `Seccion: ${updatedPatient.section || ''}\n` +
+           `\n` +
+           `Diagnostico:\n${updatedPatient.diagnoses || ''}\n` +
+           `\n` +
+           `Manejo:\n${updatedPatient.managementPlan || ''}\n` +
+           `\n` +
+           `Paraclinicos:\n${updatedPatient.paraclinicals || 'SIN REGISTRO'}\n` +
+           `\n` +
+           `Pendiente:\n${updatedPatient.pendientes || 'NINGUNO'}\n` +
+           `\n` +
+           `Remitido: ${updatedPatient.isRemitido ? 'SI' : 'NO'}\n` +
+           `Estado: ${updatedPatient.remitidoComment || 'NINGUNO'}\n` +
+           `Medico_Entrega: ${updatedPatient.deliveredBy || ''}\n` +
+           `Medico_Recibe: ${updatedPatient.receivedBy || ''}\n` +
+           `--------------------------------------------------------------------------------------------------\n\n`;
+  }
+
+  // Split content by dashes
+  const parts = docText.split(/--------------------------------------------------------------------------------------------------/);
+  
+  // Normalized target Bed
+  const targetBed = String(updatedPatient.bed || '').trim().toLowerCase();
+  
+  let replaced = false;
+  
+  const updatedParts = parts.map((part) => {
+    // Check if this part contains the specific "Cama: targetBed"
+    const bedRegex = /Cama:\s*([^\n]+)/i;
+    const match = part.match(bedRegex);
+    if (match && match[1].trim().toLowerCase() === targetBed) {
+      replaced = true;
+      
+      // Get the existing register number from the block if present
+      const regMatch = part.match(/\[\s*REGISTRO\s*N°\s*(\d+)/i);
+      const regNum = regMatch ? regMatch[1] : '1';
+      
+      // Build updated block text
+      let blockText = `\n[ REGISTRO N° ${regNum} - ENTREGA DE TURNO ]\n`;
+      blockText += `Cama: ${updatedPatient.bed || 'S/C'}\n`;
+      blockText += `Fecha: ${updatedPatient.entryDate || ''}\n`;
+      blockText += `Paciente: ${updatedPatient.name || ''} (${updatedPatient.age || ''}) • EPS: ${updatedPatient.eps || ''}\n`;
+      blockText += `Especialidad: ${updatedPatient.specialty || ''}\n`;
+      blockText += `Seccion: ${updatedPatient.section || ''}\n`;
+      blockText += `\n`;
+      blockText += `Diagnostico:\n${updatedPatient.diagnoses || ''}\n`;
+      blockText += `\n`;
+      blockText += `Manejo:\n${updatedPatient.managementPlan || ''}\n`;
+      blockText += `\n`;
+      blockText += `Paraclinicos:\n${updatedPatient.paraclinicals || 'SIN REGISTRO'}\n`;
+      blockText += `\n`;
+      blockText += `Pendiente:\n${updatedPatient.pendientes || 'NINGUNO'}\n`;
+      blockText += `\n`;
+      blockText += `Remitido: ${updatedPatient.isRemitido ? 'SI' : 'NO'}\n`;
+      blockText += `Estado: ${updatedPatient.remitidoComment || 'NINGUNO'}\n`;
+      blockText += `Medico_Entrega: ${updatedPatient.deliveredBy || ''}\n`;
+      blockText += `Medico_Recibe: ${updatedPatient.receivedBy || ''}\n`;
+      
+      return blockText;
+    }
+    return part;
+  });
+
+  if (replaced) {
+    return updatedParts.join('--------------------------------------------------------------------------------------------------');
+  }
+
+  // If the cama wasn't found, find the last block index or count then append a new patient block
+  let regNum = 1;
+  parts.forEach(part => {
+    const regMatch = part.match(/\[\s*REGISTRO\s*N°\s*(\d+)/i);
+    if (regMatch) {
+      const num = parseInt(regMatch[1], 10);
+      if (num >= regNum) regNum = num + 1;
+    }
+  });
+
+  let appendBlock = `--------------------------------------------------------------------------------------------------\n`;
+  appendBlock += `[ REGISTRO N° ${regNum} - ENTREGA DE TURNO ]\n`;
+  appendBlock += `--------------------------------------------------------------------------------------------------\n`;
+  appendBlock += `Cama: ${updatedPatient.bed || 'S/C'}\n`;
+  appendBlock += `Fecha: ${updatedPatient.entryDate || ''}\n`;
+  appendBlock += `Paciente: ${updatedPatient.name || ''} (${updatedPatient.age || ''}) • EPS: ${updatedPatient.eps || ''}\n`;
+  appendBlock += `Especialidad: ${updatedPatient.specialty || ''}\n`;
+  appendBlock += `Seccion: ${updatedPatient.section || ''}\n`;
+  appendBlock += `\n`;
+  appendBlock += `Diagnostico:\n${updatedPatient.diagnoses || ''}\n`;
+  appendBlock += `\n`;
+  appendBlock += `Manejo:\n${updatedPatient.managementPlan || ''}\n`;
+  appendBlock += `\n`;
+  appendBlock += `Paraclinicos:\n${updatedPatient.paraclinicals || 'SIN REGISTRO'}\n`;
+  appendBlock += `\n`;
+  appendBlock += `Pendiente:\n${updatedPatient.pendientes || 'NINGUNO'}\n`;
+  appendBlock += `\n`;
+  appendBlock += `Remitido: ${updatedPatient.isRemitido ? 'SI' : 'NO'}\n`;
+  appendBlock += `Estado: ${updatedPatient.remitidoComment || 'NINGUNO'}\n`;
+  appendBlock += `Medico_Entrega: ${updatedPatient.deliveredBy || ''}\n`;
+  appendBlock += `Medico_Recibe: ${updatedPatient.receivedBy || ''}\n`;
+  appendBlock += `--------------------------------------------------------------------------------------------------\n\n`;
+
+  return docText + appendBlock;
+}
+
 export function CensusView({ currentUser, isAdmin, isAuthenticated, doctors }: Props) {
   const [patients, setPatients] = useState<Patient[]>([]);
   const [loading, setLoading] = useState(true);
@@ -83,10 +202,23 @@ export function CensusView({ currentUser, isAdmin, isAuthenticated, doctors }: P
   const [hasGoogleToken, setHasGoogleToken] = useState(!!localStorage.getItem('google_access_token'));
   const [patientToDelete, setPatientToDelete] = useState<string | null>(null);
 
+  // Dynamic Department Titles States
+  const [departmentTitles, setDepartmentTitles] = useState<Record<string, string>>({
+    'all': 'CENSO GENERAL DE PACIENTES',
+    'URGENCIAS': 'CENSO DE URGENCIAS',
+    'OBSERVACION URGENCIAS': 'CENSO DE OBSERVACION DE URGENCIAS',
+    'HOSPITALIZACION': 'CENSO DE HOSPITALIZACION',
+    'PARTOS': 'CENSO DE SALA DE PARTOS',
+    'CIRUGIA': 'CENSO DE QUIRÓFANOS (CIRUGÍA)'
+  });
+  const [editingTitleText, setEditingTitleText] = useState('');
+
   // Inline Editing States and Utilities
   const [isInlineEditEnabled, setIsInlineEditEnabled] = useState(true);
   const [activeCell, setActiveCell] = useState<{ id: string; field: string; value: string } | null>(null);
   const [savingCells, setSavingCells] = useState<{ [key: string]: boolean }>({});
+  const [activeNoteInputId, setActiveNoteInputId] = useState<string | null>(null);
+  const [quickNoteValue, setQuickNoteValue] = useState<string>('');
 
   // Background Sheets Sync helper
   const triggerDriveBackgroundSync = async (updatedPatientsList: Patient[]) => {
@@ -121,6 +253,45 @@ export function CensusView({ currentUser, isAdmin, isAuthenticated, doctors }: P
       console.log("Auto-saved changes to Google Sheets successfully in background.");
     } catch (err) {
       console.error("Auto background Sheets sync failed:", err);
+    }
+  };
+
+  // Synchronize a specific patient's text block inside their clinical location census file in Drive
+  const triggerSinglePatientDriveDocSync = async (patient: Patient, updatedFields: Partial<Patient>) => {
+    const token = localStorage.getItem('google_access_token');
+    if (!token) {
+      console.warn("No Google Drive access token found. Single patient Drive Doc Sync inactive.");
+      return;
+    }
+
+    try {
+      // 1. Get the patient section/department
+      const section = updatedFields.section || patient.section || 'HOSPITALIZACION';
+      
+      // 2. Get or create (with auto-duplication of previous shifts!) the clinical census file for this department
+      const docInfo = await GoogleDriveService.getOrCreateLocationCensusFile(section);
+      if (!docInfo || !docInfo.id) {
+        console.warn(`Could not retrieve or create Google Doc for section ${section}`);
+        return;
+      }
+
+      // 3. Get the existing plain text content of the Google Doc
+      let currentText = "";
+      try {
+        currentText = await GoogleDriveService.getGoogleDocText(docInfo.id);
+      } catch (e) {
+        console.warn("Google Doc is brand new or text retrieve failed, starting with clean format template.");
+      }
+
+      // 4. Overwrite/replace the exact patient block by CAMA
+      const mergedPatient = { ...patient, ...updatedFields } as Patient;
+      const updatedText = overwriteDocPatientBlock(currentText, mergedPatient);
+
+      // 5. Save back to Google Doc
+      await GoogleDriveService.updateGoogleDocText(docInfo.id, updatedText);
+      console.log(`Successfully sync'd bed "${mergedPatient.bed}" to Drive Google Doc "${docInfo.name}" (${docInfo.id})`);
+    } catch (err) {
+      console.error("Error in triggerSinglePatientDriveDocSync:", err);
     }
   };
 
@@ -171,7 +342,10 @@ export function CensusView({ currentUser, isAdmin, isAuthenticated, doctors }: P
         
         // Background sync to Drive Spreadsheet
         const updatedList = patients.map(p => p.id === patient.id ? { ...p, ...updateData } : p);
-        await triggerDriveBackgroundSync(updatedList);
+        triggerDriveBackgroundSync(updatedList);
+
+        // Background sync to location-specific Google Doc
+        triggerSinglePatientDriveDocSync(patient, updateData);
         
       } catch (err) {
         console.error("Error committing inline edit:", err);
@@ -260,13 +434,100 @@ export function CensusView({ currentUser, isAdmin, isAuthenticated, doctors }: P
         id: doc.id,
         ...doc.data()
       })) as Patient[];
-      setPatients(data);
+
+      // Group patients by unique bed (CAMA) to prevent duplication, keeping only the most recent updated timestamp
+      const map: Record<string, Patient[]> = {};
+      data.forEach(p => {
+        const bedVal = (p.bed || '').trim().toUpperCase();
+        // If bed is empty or S/C, treat it as unique to avoid filtering out patients with unassigned beds
+        const key = (bedVal && bedVal !== 'S/C') ? bedVal : `NO_BED_${p.id}`;
+        if (!map[key]) map[key] = [];
+        map[key].push(p);
+      });
+
+      const uniquePatients: Patient[] = [];
+      const duplicateIdsToDelete: string[] = [];
+
+      Object.values(map).forEach(group => {
+        // Sort by updatedAt descending to preserve the most recently updated patient
+        group.sort((a, b) => {
+          const timeA = typeof a.updatedAt === 'number' ? a.updatedAt : (Date.parse(String(a.updatedAt)) || 0);
+          const timeB = typeof b.updatedAt === 'number' ? b.updatedAt : (Date.parse(String(b.updatedAt)) || 0);
+          return timeB - timeA;
+        });
+        uniquePatients.push(group[0]);
+
+        // Handover legacy older duplicates to deletion queue
+        for (let i = 1; i < group.length; i++) {
+          duplicateIdsToDelete.push(group[i].id);
+        }
+      });
+
+      // Clear duplicate entries from Cloud DB in the background
+      duplicateIdsToDelete.forEach(async (id) => {
+        try {
+          await deleteDoc(doc(db, 'census', id));
+          console.log(`Auto-removed duplicate patient record: ${id}`);
+        } catch (e) {
+          console.error("Failed to remove duplicate database document:", e);
+        }
+      });
+
+      setPatients(uniquePatients);
       setLoading(false);
     }, (error) => {
       handleFirestoreError(error, OperationType.LIST, 'census');
     });
     return () => unsubscribe();
   }, [isAuthenticated]);
+
+  useEffect(() => {
+    if (!isAuthenticated) return;
+    const docRef = doc(db, 'settings', 'department_titles');
+    const unsubscribe = onSnapshot(docRef, (docSnap) => {
+      if (docSnap.exists()) {
+        const data = docSnap.data() as Record<string, string>;
+        setDepartmentTitles(prev => ({
+          ...prev,
+          ...data
+        }));
+      } else {
+        setDoc(docRef, {
+          'all': 'CENSO GENERAL DE PACIENTES',
+          'URGENCIAS': 'CENSO DE URGENCIAS',
+          'OBSERVACION URGENCIAS': 'CENSO DE OBSERVACION DE URGENCIAS',
+          'HOSPITALIZACION': 'CENSO DE HOSPITALIZACION',
+          'PARTOS': 'CENSO DE SALA DE PARTOS',
+          'CIRUGIA': 'CENSO DE QUIRÓFANOS (CIRUGÍA)'
+        }).catch(err => {
+          console.error("Error initializing department titles in db:", err);
+        });
+      }
+    }, (error) => {
+      console.warn("Failed to subscribe component settings, fallback to defaults.", error);
+    });
+    return () => unsubscribe();
+  }, [isAuthenticated]);
+
+  useEffect(() => {
+    setEditingTitleText(departmentTitles[filterSection] || '');
+  }, [filterSection, departmentTitles]);
+
+  const handleSaveCustomTitle = async () => {
+    if (!editingTitleText.trim()) return;
+    try {
+      const docRef = doc(db, 'settings', 'department_titles');
+      await setDoc(docRef, {
+        [filterSection]: editingTitleText.trim()
+      }, { merge: true });
+      setDepartmentTitles(prev => ({
+        ...prev,
+        [filterSection]: editingTitleText.trim()
+      }));
+    } catch (error) {
+      console.error("Error saving custom department title:", error);
+    }
+  };
 
   const [isSyncing, setIsSyncing] = useState(false);
 
@@ -598,7 +859,14 @@ export function CensusView({ currentUser, isAdmin, isAuthenticated, doctors }: P
 
     setIsImporting(true);
     try {
-      const latestDoc = await GoogleDriveService.getLatestCensusGoogleDoc();
+      let latestDoc = null;
+      if (filterSection !== 'all') {
+        const docInfo = await GoogleDriveService.getOrCreateLocationCensusFile(filterSection);
+        latestDoc = { id: docInfo.id, name: docInfo.name };
+      } else {
+        latestDoc = await GoogleDriveService.getLatestCensusGoogleDoc();
+      }
+
       if (!latestDoc) {
         alert("No se encontró ningún archivo de censo reciente en la carpeta de Google Drive. Se abrirá el listado manual para buscar en otros directorios.");
         setShowDriveFiles(true);
@@ -606,7 +874,7 @@ export function CensusView({ currentUser, isAdmin, isAuthenticated, doctors }: P
         return;
       }
 
-      const confirmImport = window.confirm(`Se encontró el archivo de Google Docs más reciente del día:\n\n"${latestDoc.name}"\n\n¿Desea importar y actualizar los pacientes del Censo con este documento?`);
+      const confirmImport = window.confirm(`Se encontró el archivo de Google Docs correspondiente para este departamento:\n\n"${latestDoc.name}"\n\n¿Desea importar y actualizar los pacientes del Censo con este documento?`);
       if (!confirmImport) {
         setIsImporting(false);
         return;
@@ -644,7 +912,7 @@ export function CensusView({ currentUser, isAdmin, isAuthenticated, doctors }: P
         const actualizadoPor = p.updatedBy || currentUser?.nombre || 'Importación Google Docs';
         const updatedAt = p.updatedAt || Date.now();
 
-        const existing = patients.find(pat => pat.bed === bed && pat.name.toLowerCase() === name.toLowerCase());
+        const existing = patients.find(pat => pat.bed === bed && (pat.section || 'HOSPITALIZACION').trim().toUpperCase() === (section || 'HOSPITALIZACION').trim().toUpperCase());
 
         if (existing) {
           const hasChanges = 
@@ -714,6 +982,31 @@ export function CensusView({ currentUser, isAdmin, isAuthenticated, doctors }: P
         setHasGoogleToken(false);
       }
       alert(`Error al importar el último censo de Google Drive: ${err.message}`);
+    } finally {
+      setIsImporting(false);
+    }
+  };
+
+  const handleOpenOnlineEditForActiveSection = async () => {
+    const token = localStorage.getItem('google_access_token');
+    if (!token) {
+      alert("Por favor vincule su cuenta de Google primero.");
+      setShowDriveFiles(true);
+      return;
+    }
+    const section = filterSection === 'all' ? 'HOSPITALIZACION' : filterSection;
+    setIsImporting(true);
+    try {
+      const docInfo = await GoogleDriveService.getOrCreateLocationCensusFile(section);
+      setSelectedDriveFile({
+        id: docInfo.id,
+        name: docInfo.name,
+        webViewLink: docInfo.webViewLink,
+        mimeType: docInfo.mimeType
+      });
+      setShowDriveFiles(true);
+    } catch (e: any) {
+      alert("Error al abrir edición en línea: " + e.message);
     } finally {
       setIsImporting(false);
     }
@@ -855,7 +1148,7 @@ export function CensusView({ currentUser, isAdmin, isAuthenticated, doctors }: P
         
         const medico = actualizadoPor || entrega || recibe || currentUser?.nombre || 'Importación Drive';
         
-        const existing = patients.find(p => p.bed === bed && p.name.toLowerCase() === name.toLowerCase());
+        const existing = patients.find(p => p.bed === bed && (p.section || 'HOSPITALIZACION').trim().toUpperCase() === (section || 'HOSPITALIZACION').trim().toUpperCase());
         
         let sheetDate = 0;
         if (actualizadoStr) {
@@ -1093,7 +1386,7 @@ export function CensusView({ currentUser, isAdmin, isAuthenticated, doctors }: P
           }
         }
 
-        const existingPatient = patients.find(p => p.bed === bed && p.name.toLowerCase() === name.toLowerCase());
+        const existingPatient = patients.find(p => p.bed === bed && (p.section || 'HOSPITALIZACION').trim().toUpperCase() === (section || 'HOSPITALIZACION').trim().toUpperCase());
         const patientData = {
           bed,
           name,
@@ -1142,10 +1435,17 @@ export function CensusView({ currentUser, isAdmin, isAuthenticated, doctors }: P
         updatedBy: currentUser?.nombre || 'SISTEMA'
       };
       
+      const existingInBedVal = patients.find(p => (p.bed || '').trim().toUpperCase() === (formData.bed || '').trim().toUpperCase() && (p.section || 'HOSPITALIZACION').trim().toUpperCase() === (formData.section || 'HOSPITALIZACION').trim().toUpperCase());
+      
       if (editingPatient) {
         await updateDoc(doc(db, 'census', editingPatient.id), data);
+        triggerSinglePatientDriveDocSync(editingPatient, data);
+      } else if (existingInBedVal) {
+        await updateDoc(doc(db, 'census', existingInBedVal.id), data);
+        triggerSinglePatientDriveDocSync(existingInBedVal, data);
       } else {
-        await addDoc(collection(db, 'census'), data);
+        const docRef = await addDoc(collection(db, 'census'), data);
+        triggerSinglePatientDriveDocSync({ id: docRef.id, ...data } as Patient, {});
       }
       setIsAddingPatient(false);
       setEditingPatient(null);
@@ -1172,7 +1472,23 @@ export function CensusView({ currentUser, isAdmin, isAuthenticated, doctors }: P
   };
 
   const handlePrint = () => {
-    window.print();
+    try {
+      const printableArea = document.getElementById("printable-census-area");
+      if (!printableArea) {
+        console.warn("Print target container #printable-census-area was not found in DOM.");
+        window.print();
+        return;
+      }
+      
+      console.log("Triggering window.print() targeting #printable-census-area container specifically.");
+      window.print();
+    } catch (e) {
+      console.error("Native printing specifically targeting #printable-census-area failed:", e);
+    }
+    // Automatically trigger visual hints if within a sandboxed iframe
+    if (window.self !== window.top) {
+      alert("💡 CONSEJO DE IMPRESIÓN:\n\nDebido a las políticas de seguridad de su previsualizador (iframe), es posible que la impresión nativa esté bloqueada.\n\nPara solucionar esto, por favor haga clic en el botón con flecha diagonal de la esquina superior derecha del previsualizador ('Abrir en pestaña nueva' / 'Open in new tab'), y presione 'Imprimir Censo' desde esa pestaña independiente.");
+    }
   };
 
   const executeHandover = async () => {
@@ -1404,6 +1720,14 @@ export function CensusView({ currentUser, isAdmin, isAuthenticated, doctors }: P
               {isImporting ? <RefreshCcw className="w-4 h-4 animate-spin" /> : <CloudDownload className="w-4 h-4 text-sky-400" />} Importar Último Censo
             </button>
             <button 
+              onClick={handleOpenOnlineEditForActiveSection}
+              disabled={isImporting || isSyncing}
+              className={`flex-1 md:flex-none bg-slate-800 text-white px-4 py-2.5 rounded-2xl font-black text-[10px] uppercase flex items-center justify-center gap-2 hover:bg-slate-700 transition-all shadow-lg`}
+              title="Editar el censo de este departamento en línea usando Google Docs"
+            >
+              <Edit3 className="w-4 h-4 text-amber-400" /> Editar en Línea
+            </button>
+            <button 
               onClick={() => {
                 setHandoverSender(currentUser?.nombre || '');
                 setShowHandoverModal(true);
@@ -1448,6 +1772,29 @@ export function CensusView({ currentUser, isAdmin, isAuthenticated, doctors }: P
             <option value="all">TODO EL CENSO</option>
             {SECTIONS.map(s => <option key={s} value={s}>{s}</option>)}
           </select>
+        </div>
+
+        {/* Department Title Control Widget */}
+        <div className="mt-4 p-4 bg-emerald-950/30 rounded-2xl border border-emerald-700/30 relative z-10 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-inner">
+          <div className="flex-1">
+            <span className="text-[9px] font-black uppercase text-emerald-300 tracking-wider block">Título del Componente para Reporte de Censo:</span>
+            <input
+              type="text"
+              readOnly={!isAdmin}
+              value={editingTitleText}
+              onChange={(e) => setEditingTitleText(e.target.value)}
+              className={`text-sm font-extrabold text-white bg-transparent border-b ${isAdmin ? 'border-emerald-500/50 focus:border-white' : 'border-transparent'} py-1 w-full outline-none transition-all placeholder-emerald-400/40`}
+              placeholder="Escriba un título personalizado para este departamento (p.ej.: URGENCIAS)..."
+            />
+          </div>
+          {isAdmin && (
+            <button
+              onClick={handleSaveCustomTitle}
+              className="px-4 py-2 bg-emerald-400 hover:bg-emerald-300 active:scale-95 text-emerald-950 font-black text-[10px] uppercase rounded-xl transition-all shadow-md shrink-0 self-end sm:self-auto flex items-center gap-1.5"
+            >
+              Guardar Título
+            </button>
+          )}
         </div>
       </div>
 
@@ -1530,6 +1877,115 @@ export function CensusView({ currentUser, isAdmin, isAuthenticated, doctors }: P
                      )}
                   </div>
 
+                  {/* Quick Actions Panel on Grid Cards */}
+                  <div className="mt-4 pt-3 border-t border-dashed border-slate-100 text-left">
+                    <div className="text-[7px] font-black text-slate-400 uppercase tracking-widest mb-1.5 leading-none">Acciones Rápidas</div>
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      {/* Alert Toggle */}
+                      <button
+                        onClick={async () => {
+                          const pRef = doc(db, 'census', patient.id);
+                          const updateData = { isHighlight: !patient.isHighlight };
+                          await updateDoc(pRef, updateData);
+                          triggerSinglePatientDriveDocSync(patient, updateData);
+                        }}
+                        className={`px-2 py-1 rounded-lg text-[9px] font-black  uppercase tracking-tight flex items-center gap-1 transition-all ${
+                          patient.isHighlight 
+                            ? 'bg-amber-500 text-white shadow-sm scale-102 font-black' 
+                            : 'bg-amber-105 text-amber-800 hover:bg-amber-100 border border-amber-200'
+                        }`}
+                        title="Configurar Alerta / Resaltar"
+                      >
+                        <AlertCircle className="w-2.5 h-2.5" />
+                        {patient.isHighlight ? 'Con Alerta' : 'Alerta'}
+                      </button>
+
+                      {/* Add Note Button */}
+                      <button
+                        onClick={() => {
+                          if (activeNoteInputId === patient.id) {
+                            setActiveNoteInputId(null);
+                          } else {
+                            setActiveNoteInputId(patient.id);
+                            setQuickNoteValue('');
+                          }
+                        }}
+                        className={`px-2 py-1 rounded-lg text-[9px] font-black uppercase tracking-tight flex items-center gap-1 transition-all ${
+                          activeNoteInputId === patient.id
+                            ? 'bg-sky-600 text-white shadow-md'
+                            : 'bg-sky-55 text-sky-800 hover:bg-sky-100 border border-sky-200'
+                        }`}
+                        title="Agregar Nota / Pendiente"
+                      >
+                        <Plus className="w-2.5 h-2.5" />
+                        +Nota
+                      </button>
+
+                      {/* Complete Tasks Button */}
+                      <button
+                        onClick={async () => {
+                          const pRef = doc(db, 'census', patient.id);
+                          const updateData = { pendientes: 'Ninguno' };
+                          await updateDoc(pRef, updateData);
+                          triggerSinglePatientDriveDocSync(patient, updateData);
+                        }}
+                        disabled={!patient.pendientes || patient.pendientes === 'Ninguno'}
+                        className={`px-2 py-1 rounded-lg text-[9px] font-black uppercase tracking-tight flex items-center gap-1 transition-all ${
+                          !patient.pendientes || patient.pendientes === 'Ninguno'
+                            ? 'opacity-40 cursor-not-allowed bg-slate-100 text-slate-400 border border-slate-200'
+                            : 'bg-emerald-100 text-emerald-800 hover:bg-emerald-200 border border-emerald-300'
+                        }`}
+                        title="Completar"
+                      >
+                        <CheckCircle2 className="w-2.5 h-2.5" />
+                        Completar
+                      </button>
+                    </div>
+
+                    {/* Inline note input inside Grid Card */}
+                    {activeNoteInputId === patient.id && (
+                      <div className="mt-2 flex gap-1.5 items-center animate-fadeIn">
+                        <input
+                          type="text"
+                          placeholder="Escriba nota..."
+                          value={quickNoteValue}
+                          onChange={(e) => setQuickNoteValue(e.target.value)}
+                          onKeyDown={async (e) => {
+                            if (e.key === 'Enter') {
+                              if (!quickNoteValue.trim()) return;
+                              const pRef = doc(db, 'census', patient.id);
+                              const currentPend = patient.pendientes && patient.pendientes !== 'Ninguno' ? patient.pendientes : '';
+                              const newPend = currentPend ? `${currentPend}\n- ${quickNoteValue.trim()}` : `- ${quickNoteValue.trim()}`;
+                              const updateData = { pendientes: newPend };
+                              await updateDoc(pRef, updateData);
+                              triggerSinglePatientDriveDocSync(patient, updateData);
+                              setQuickNoteValue('');
+                              setActiveNoteInputId(null);
+                            }
+                          }}
+                          className="bg-slate-50 border border-slate-200 rounded-xl px-3 py-1.5 text-[10px] font-bold outline-none focus:ring-2 focus:ring-sky-500 w-full"
+                          autoFocus
+                        />
+                        <button
+                          onClick={async () => {
+                            if (!quickNoteValue.trim()) return;
+                            const pRef = doc(db, 'census', patient.id);
+                            const currentPend = patient.pendientes && patient.pendientes !== 'Ninguno' ? patient.pendientes : '';
+                            const newPend = currentPend ? `${currentPend}\n- ${quickNoteValue.trim()}` : `- ${quickNoteValue.trim()}`;
+                            const updateData = { pendientes: newPend };
+                            await updateDoc(pRef, updateData);
+                            triggerSinglePatientDriveDocSync(patient, updateData);
+                            setQuickNoteValue('');
+                            setActiveNoteInputId(null);
+                          }}
+                          className="bg-sky-600 text-white rounded-xl px-2.5 py-1.5 hover:bg-sky-700 active:scale-95 transition-all font-black text-[10px]"
+                        >
+                          ✔
+                        </button>
+                      </div>
+                    )}
+                  </div>
+
                   <div className="flex justify-between items-center mt-5 pt-4 border-t border-slate-100">
                     <div className="flex flex-col">
                        <span className="text-[7px] text-slate-300 uppercase font-black">Actualizado por</span>
@@ -1586,12 +2042,12 @@ export function CensusView({ currentUser, isAdmin, isAuthenticated, doctors }: P
                     <th className="px-4 py-4">Resultados Paraclínicos</th>
                     <th className="px-4 py-4">Pendientes Críticos</th>
                     <th className="px-4 py-4 w-36 text-center">Especialidad</th>
-                    <th className="px-4 py-4 w-24 sticky right-0 bg-slate-800 shadow-l shadow-slate-800 text-center">Acciones</th>
+                    <th className="px-4 py-4 w-60 sticky right-0 bg-slate-800 shadow-l shadow-slate-800 text-center">Rápidos / Acciones</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
                   {filteredPatients.map(p => (
-                    <tr key={p.id} className={`group hover:bg-emerald-50/50 transition-colors ${p.isHighlight || p.isRemitido ? 'bg-yellow-105' : ''}`}>
+                    <tr key={p.id} className={`patient-row group hover:bg-emerald-50/50 transition-colors ${p.isHighlight || p.isRemitido ? 'bg-yellow-105' : ''}`}>
                       <td className="px-4 py-3 text-center bg-slate-50/50 group-hover:bg-emerald-100/30">
                         <InlineCell 
                           patient={p} 
@@ -1681,7 +2137,9 @@ export function CensusView({ currentUser, isAdmin, isAuthenticated, doctors }: P
                             <button 
                               onClick={async () => {
                                 const pRef = doc(db, 'census', p.id);
-                                await updateDoc(pRef, { isHighlight: !p.isHighlight });
+                                const updateData = { isHighlight: !p.isHighlight };
+                                await updateDoc(pRef, updateData);
+                                triggerSinglePatientDriveDocSync(p, updateData);
                               }}
                               className={`text-[8px] font-black rounded px-1.5 py-0.5 ${p.isHighlight ? 'bg-amber-500 text-white shadow-sm' : 'bg-amber-100 text-amber-800 hover:bg-amber-200'}`}
                             >
@@ -1690,7 +2148,9 @@ export function CensusView({ currentUser, isAdmin, isAuthenticated, doctors }: P
                             <button 
                               onClick={async () => {
                                 const pRef = doc(db, 'census', p.id);
-                                await updateDoc(pRef, { isRemitido: !p.isRemitido });
+                                const updateData = { isRemitido: !p.isRemitido };
+                                await updateDoc(pRef, updateData);
+                                triggerSinglePatientDriveDocSync(p, updateData);
                               }}
                               className={`text-[8px] font-black rounded px-1.5 py-0.5 ${p.isRemitido ? 'bg-[#0f5132] text-white shadow-sm' : 'bg-emerald-100 text-emerald-800 hover:bg-emerald-200'}`}
                             >
@@ -1702,7 +2162,9 @@ export function CensusView({ currentUser, isAdmin, isAuthenticated, doctors }: P
                             <button 
                               onClick={async () => {
                                 const pRef = doc(db, 'census', p.id);
-                                await updateDoc(pRef, { isHighlight: true });
+                                const updateData = { isHighlight: true };
+                                await updateDoc(pRef, updateData);
+                                triggerSinglePatientDriveDocSync(p, updateData);
                               }}
                               className="text-[8px] font-black rounded px-1.5 py-0.5 bg-amber-100 text-amber-800 hover:bg-amber-200"
                             >
@@ -1711,7 +2173,9 @@ export function CensusView({ currentUser, isAdmin, isAuthenticated, doctors }: P
                             <button 
                               onClick={async () => {
                                 const pRef = doc(db, 'census', p.id);
-                                await updateDoc(pRef, { isRemitido: true });
+                                const updateData = { isRemitido: true };
+                                await updateDoc(pRef, updateData);
+                                triggerSinglePatientDriveDocSync(p, updateData);
                               }}
                               className="text-[8px] font-black rounded px-1.5 py-0.5 bg-emerald-100 text-emerald-800 hover:bg-emerald-200"
                             >
@@ -1737,11 +2201,13 @@ export function CensusView({ currentUser, isAdmin, isAuthenticated, doctors }: P
                             onChange={async (e) => {
                               const val = e.target.value;
                               const pRef = doc(db, 'census', p.id);
-                              await updateDoc(pRef, { 
+                              const updateData = { 
                                 specialty: val,
                                 updatedAt: Date.now(),
                                 updatedBy: currentUser?.nombre || 'SISTEMA'
-                              });
+                              };
+                              await updateDoc(pRef, updateData);
+                              triggerSinglePatientDriveDocSync(p, updateData);
                               setActiveCell(null);
                             }}
                             onBlur={() => setActiveCell(null)}
@@ -1763,11 +2229,119 @@ export function CensusView({ currentUser, isAdmin, isAuthenticated, doctors }: P
                           </div>
                         )}
                       </td>
-                      <td className="px-4 py-3 sticky right-0 bg-white/90 group-hover:bg-emerald-50/90 shadow-l text-center">
-                         <div className="flex justify-center gap-1.5">
+                      <td className="px-4 py-3 sticky right-0 bg-white/90 group-hover:bg-emerald-50/90 shadow-l text-center min-w-[240px]">
+                        <div className="flex flex-col gap-2 items-center justify-center">
+                          <div className="flex justify-center gap-1.5">
+                            {/* Configurar Alerta */}
+                            <button
+                              onClick={async () => {
+                                const pRef = doc(db, 'census', p.id);
+                                const updateData = { isHighlight: !p.isHighlight };
+                                await updateDoc(pRef, updateData);
+                                triggerSinglePatientDriveDocSync(p, updateData);
+                              }}
+                              className={`px-2 py-1 rounded-lg text-[9px] font-black uppercase tracking-tight flex items-center gap-1 transition-all ${
+                                p.isHighlight 
+                                  ? 'bg-amber-500 text-white shadow-sm scale-102 font-black' 
+                                  : 'bg-amber-50 text-amber-800 hover:bg-amber-100 border border-amber-200'
+                              }`}
+                              title="Configurar Alerta / Resaltar"
+                            >
+                              <AlertCircle className="w-2.5 h-2.5" />
+                              {p.isHighlight ? 'Con Alerta' : 'Alerta'}
+                            </button>
+
+                            {/* Agregar Nota Rápida */}
+                            <button
+                              onClick={() => {
+                                if (activeNoteInputId === p.id) {
+                                  setActiveNoteInputId(null);
+                                } else {
+                                  setActiveNoteInputId(p.id);
+                                  setQuickNoteValue('');
+                                }
+                              }}
+                              className={`px-2 py-1 rounded-lg text-[9px] font-black uppercase tracking-tight flex items-center gap-1 transition-all ${
+                                activeNoteInputId === p.id
+                                  ? 'bg-sky-600 text-white shadow-sm'
+                                  : 'bg-sky-50 text-sky-800 hover:bg-sky-100 border border-sky-200'
+                              }`}
+                              title="Agregar Nota o Pendiente"
+                            >
+                              <Plus className="w-2.5 h-2.5" />
+                              +Nota
+                            </button>
+
+                            {/* Completar Tarea */}
+                            <button
+                              onClick={async () => {
+                                const pRef = doc(db, 'census', p.id);
+                                const updateData = { pendientes: 'Ninguno' };
+                                await updateDoc(pRef, updateData);
+                                triggerSinglePatientDriveDocSync(p, updateData);
+                              }}
+                              disabled={!p.pendientes || p.pendientes === 'Ninguno'}
+                              className={`px-2 py-1 rounded-lg text-[9px] font-black uppercase tracking-tight flex items-center gap-1 transition-all ${
+                                !p.pendientes || p.pendientes === 'Ninguno'
+                                  ? 'opacity-40 cursor-not-allowed bg-slate-100 text-slate-400 border border-slate-200'
+                                  : 'bg-emerald-100 text-emerald-800 hover:bg-emerald-200 border border-emerald-300'
+                              }`}
+                              title="Marcar Pendiente como Completado"
+                            >
+                              <CheckCircle2 className="w-2.5 h-2.5" />
+                              Completar
+                            </button>
+                          </div>
+
+                          {/* Inline quick note input */}
+                          {activeNoteInputId === p.id && (
+                            <div className="flex gap-1 items-center animate-fadeIn w-full max-w-[200px]">
+                              <input
+                                type="text"
+                                placeholder="Nota rápida..."
+                                value={quickNoteValue}
+                                onChange={(e) => setQuickNoteValue(e.target.value)}
+                                onKeyDown={async (e) => {
+                                  if (e.key === 'Enter') {
+                                    if (!quickNoteValue.trim()) return;
+                                    const pRef = doc(db, 'census', p.id);
+                                    const currentPend = p.pendientes && p.pendientes !== 'Ninguno' ? p.pendientes : '';
+                                    const newPend = currentPend ? `${currentPend}\n- ${quickNoteValue.trim()}` : `- ${quickNoteValue.trim()}`;
+                                    const updateData = { pendientes: newPend };
+                                    await updateDoc(pRef, updateData);
+                                    triggerSinglePatientDriveDocSync(p, updateData);
+                                    setQuickNoteValue('');
+                                    setActiveNoteInputId(null);
+                                  }
+                                }}
+                                className="bg-slate-50 border border-slate-200 rounded px-1.5 py-1 text-[9px] font-bold outline-none focus:ring-1 focus:ring-sky-500 w-full"
+                                autoFocus
+                              />
+                              <button
+                                onClick={async () => {
+                                  if (!quickNoteValue.trim()) return;
+                                  const pRef = doc(db, 'census', p.id);
+                                  const currentPend = p.pendientes && p.pendientes !== 'Ninguno' ? p.pendientes : '';
+                                  const newPend = currentPend ? `${currentPend}\n- ${quickNoteValue.trim()}` : `- ${quickNoteValue.trim()}`;
+                                  const updateData = { pendientes: newPend };
+                                  await updateDoc(pRef, updateData);
+                                  triggerSinglePatientDriveDocSync(p, updateData);
+                                  setQuickNoteValue('');
+                                  setActiveNoteInputId(null);
+                                }}
+                                className="bg-sky-600 text-white rounded px-2 py-1 hover:bg-sky-700 active:scale-90 transition-all font-black text-[9px]"
+                              >
+                                ✔
+                              </button>
+                            </div>
+                          )}
+
+                          {/* Standard Edit/Delete Actions */}
+                          <div className="flex justify-center gap-1.5 border-t border-slate-100 pt-1.5 w-full">
                             <button onClick={() => { setEditingPatient(p); setFormData(p); setIsAddingPatient(true); }} className="p-1.5 bg-slate-100 text-slate-500 hover:bg-[#0f5132] hover:text-white rounded-lg transition-transform hover:scale-110 active:scale-90" title="Editar en Ventana"><Edit3 className="w-3.5 h-3.5" /></button>
                             <button onClick={() => handleDeletePatient(p.id)} className="p-1.5 bg-slate-100 text-slate-400 hover:bg-rose-600 hover:text-white rounded-lg transition-transform hover:scale-110 active:scale-90" title="Eliminar Paciente"><Trash2 className="w-3.5 h-3.5" /></button>
-                         </div>
+                          </div>
+                        </div>
                       </td>
                     </tr>
                   ))}
@@ -2389,7 +2963,7 @@ export function CensusView({ currentUser, isAdmin, isAuthenticated, doctors }: P
           <HospitalLogo className="w-16 h-20 shrink-0 text-[#0f5132]" />
           <div>
             <h1 className="text-xl font-extrabold uppercase tracking-tight text-slate-950">
-              CENSO ACTUALIZADO: {filterSection === 'all' ? 'TODO EL ESTABLECIMIENTO' : filterSection}
+              {departmentTitles[filterSection] ? departmentTitles[filterSection].toUpperCase() : (filterSection === 'all' ? 'CENSO GENERAL DE PACIENTES' : `CENSO DE ${filterSection}`)}
             </h1>
             <p className="text-[10px] font-black text-[#0f5132] uppercase tracking-wide">
               HOSPITAL DEPARTAMENTAL SAN ANTONIO - ROLDANILLO E.S.E.
@@ -2427,36 +3001,62 @@ export function CensusView({ currentUser, isAdmin, isAuthenticated, doctors }: P
           </tr>
         </thead>
         <tbody className="divide-y divide-slate-400">
-          {filteredPatients.map(p => {
-            const isRowYellow = p.isHighlight || p.isRemitido;
-            return (
-              <tr key={p.id} className={`align-top ${isRowYellow ? 'bg-yellow-100 print:bg-yellow-101' : ''}`}>
-                <td className="px-2 py-3 border border-slate-400 text-center font-black text-xs">{p.bed || 'S/C'}</td>
-                <td className="px-2 py-3 border border-slate-400 text-center text-[9px] font-mono whitespace-nowrap">{p.entryDate || ''}</td>
-                <td className="px-3 py-3 border border-slate-400 font-black leading-tight text-slate-900">
-                  <p className="text-[10px]">{p.name || ''}</p>
-                  <p className="text-[8px] font-bold text-slate-500 mt-1 uppercase tracking-tight">{p.age || 'S/E'} • {p.eps || 'S/A'}</p>
-                </td>
-                <td className="px-3 py-3 border border-slate-400 font-bold leading-normal text-[10px] whitespace-pre-wrap">{p.diagnoses || ''}</td>
-                <td className="px-3 py-3 border border-slate-400 italic text-[9.5px] leading-relaxed whitespace-pre-wrap">{p.managementPlan || ''}</td>
-                <td className="px-3 py-3 border border-slate-400 leading-normal text-[9.5px] font-mono whitespace-pre-wrap">{p.paraclinicals || '-'}</td>
-                <td className="px-3 py-3 border border-slate-400 font-extrabold text-[10px]">
-                  {p.isRemitido && (
-                    <div className="bg-yellow-200 border border-yellow-400 text-yellow-950 text-[8px] font-black uppercase px-2 py-0.5 rounded mb-1.5 text-center font-mono animate-none">
-                      ⚠️ REMISION
-                    </div>
-                  )}
-                  <div className="leading-snug">{p.pendientes || 'Ninguno'}</div>
-                  {p.remitidoComment && (
-                    <div className="text-[8px] font-black text-blue-900 border-t border-slate-400 pt-1 mt-1.5 bg-amber-200/40 p-1 rounded">
-                      ESTADO: {p.remitidoComment}
-                    </div>
-                  )}
-                </td>
-                <td className="px-2 py-3 border border-slate-400 text-center font-black text-[9px] text-slate-800 tracking-tight">{p.specialty || ''}</td>
-              </tr>
-            );
-          })}
+          {(() => {
+            // Deduplicate filteredPatients by CAMA (bed ID) keeping only the most recent updated timestamp (updatedAt)
+            const printableMap: Record<string, Patient> = {};
+            filteredPatients.forEach(p => {
+              const bedKey = (p.bed || '').trim().toUpperCase();
+              if (bedKey && bedKey !== 'S/C') {
+                const existing = printableMap[bedKey];
+                if (!existing) {
+                  printableMap[bedKey] = p;
+                } else {
+                  const timeA = typeof p.updatedAt === 'number' ? p.updatedAt : (Date.parse(String(p.updatedAt)) || 0);
+                  const timeB = typeof existing.updatedAt === 'number' ? existing.updatedAt : (Date.parse(String(existing.updatedAt)) || 0);
+                  if (timeA > timeB) {
+                    printableMap[bedKey] = p;
+                  }
+                }
+              }
+            });
+
+            const uniquePrintablePatients = filteredPatients.filter(p => {
+              const bedKey = (p.bed || '').trim().toUpperCase();
+              if (!bedKey || bedKey === 'S/C') return true;
+              return printableMap[bedKey].id === p.id;
+            });
+
+            return uniquePrintablePatients.map(p => {
+              const isRowYellow = p.isHighlight || p.isRemitido;
+              return (
+                <tr key={p.id} className={`patient-row align-top ${isRowYellow ? 'bg-yellow-105 print:bg-yellow-101' : ''}`}>
+                  <td className="px-2 py-3 border border-slate-400 text-center font-black text-xs">{p.bed || 'S/C'}</td>
+                  <td className="px-2 py-3 border border-slate-400 text-center text-[9px] font-mono whitespace-nowrap">{p.entryDate || ''}</td>
+                  <td className="px-3 py-3 border border-slate-400 font-black leading-tight text-slate-900">
+                    <p className="text-[10px]">{p.name || ''}</p>
+                    <p className="text-[8px] font-bold text-slate-500 mt-1 uppercase tracking-tight">{p.age || 'S/E'} • {p.eps || 'S/A'}</p>
+                  </td>
+                  <td className="px-3 py-3 border border-slate-400 font-bold leading-normal text-[10px] whitespace-pre-wrap">{p.diagnoses || ''}</td>
+                  <td className="px-3 py-3 border border-slate-400 italic text-[9.5px] leading-relaxed whitespace-pre-wrap">{p.managementPlan || ''}</td>
+                  <td className="px-3 py-3 border border-slate-400 leading-normal text-[9.5px] font-mono whitespace-pre-wrap">{p.paraclinicals || '-'}</td>
+                  <td className="px-3 py-3 border border-slate-400 font-extrabold text-[10px]">
+                    {p.isRemitido && (
+                      <div className="bg-yellow-200 border border-yellow-400 text-yellow-950 text-[8px] font-black uppercase px-2 py-0.5 rounded mb-1.5 text-center font-mono animate-none">
+                        ⚠️ REMISION
+                      </div>
+                    )}
+                    <div className="leading-snug">{p.pendientes || 'Ninguno'}</div>
+                    {p.remitidoComment && (
+                      <div className="text-[8px] font-black text-blue-900 border-t border-slate-400 pt-1 mt-1.5 bg-amber-200/40 p-1 rounded">
+                        ESTADO: {p.remitidoComment}
+                      </div>
+                    )}
+                  </td>
+                  <td className="px-2 py-3 border border-slate-400 text-center font-black text-[9px] text-slate-800 tracking-tight">{p.specialty || ''}</td>
+                </tr>
+              );
+            });
+          })()}
         </tbody>
       </table>
 
@@ -2475,6 +3075,31 @@ export function CensusView({ currentUser, isAdmin, isAuthenticated, doctors }: P
                 <p className="text-[10px] font-black uppercase text-slate-800">Firma Médico Recibe</p>
                 <p className="text-[9px] font-bold text-slate-500 mt-1">{getDoctorFullLabel(handoverReceiver)}</p>
               </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Professional's Footer with Name and License / Registration */}
+      {currentUser && (
+        <div className="mt-12 pt-6 border-t-2 border-slate-900 flex justify-between items-start text-[9.5px] text-slate-700 page-break-inside-avoid">
+          <div>
+            <p className="font-extrabold uppercase text-slate-900 tracking-tight">VALIDACIÓN DE DOCUMENTO CLÍNICO</p>
+            <p className="mt-0.5 text-[8.5px] font-medium leading-snug">
+              Este censo fue generado de manera segura y autenticado digitalmente.
+              <br />
+              Hospital Departamental San Antonio - Roldanillo E.S.E. • IPS de Mediana Complejidad
+            </p>
+          </div>
+          <div className="text-right leading-relaxed shrink-0">
+            <p className="font-extrabold uppercase text-slate-900">PROFESIONAL RESPONSABLE:</p>
+            <p className="font-black text-[#0f5132] uppercase text-[10px]">
+              {currentUser.nombre} {currentUser.apellidos || ''}
+            </p>
+            {currentUser.registroMedico && (
+              <p className="font-bold text-slate-600">
+                Registro/Licencia Médica N°: {currentUser.registroMedico}
+              </p>
             )}
           </div>
         </div>

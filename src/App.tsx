@@ -58,7 +58,10 @@ import {
   ClipboardPaste,
   Phone,
   FileCheck,
-  Upload
+  Upload,
+  Cloud,
+  Sun,
+  Moon
 } from 'lucide-react';
 import { 
   Doctor, 
@@ -232,7 +235,21 @@ export default function App() {
       window.removeEventListener('offline', handleOffline);
     };
   }, []);
-  const [activeTab, setActiveTab] = useState<'home' | 'turnos' | 'census' | 'committee' | 'solicitudes' | 'novedades' | 'rural' | 'bd' | 'docs' | 'admin' | 'ayuda' | 'stats' | 'pic' | 'toolbox'>('turnos');
+  const [activeTab, setActiveTab] = useState<'home' | 'turnos' | 'census' | 'committee' | 'solicitudes' | 'novedades' | 'rural' | 'bd' | 'docs' | 'admin' | 'ayuda' | 'stats' | 'pic' | 'toolbox' | 'calendario-test'>('turnos');
+  
+  // Theme Mode
+  const [themeMode, setThemeMode] = useState<'light' | 'dark'>(() => (localStorage.getItem('app-theme-mode') as 'light' | 'dark') || 'light');
+  
+  // Selected Doctor for Personal Calendar Testing
+  const [selectedCalendarDocId, setSelectedCalendarDocId] = useState<number | null>(null);
+
+  // Census Notification Configuration
+  const [censusNotificationConfig, setCensusNotificationConfig] = useState<{ enabled: boolean, time: string, message: string, lastTriggeredDay: string }>({
+    enabled: true,
+    time: '18:00',
+    message: 'Recordatorio: Recuerde reportar el censo diario de su servicio.',
+    lastTriggeredDay: ''
+  });
   
   // Date Selection
   const [selectedMonth, setSelectedMonth] = useState(new Date().getMonth());
@@ -456,10 +473,51 @@ export default function App() {
   const [ruralDiagnosis, setRuralDiagnosis] = useState('');
   const [ruralAcceptancePlace, setRuralAcceptancePlace] = useState('');
   const [ruralCalledBy, setRuralCalledBy] = useState('');
+  const [ruralCalledById, setRuralCalledById] = useState<number | ''>('');
   const [ruralEndDate, setRuralEndDate] = useState('');
   const [ruralEndTime, setRuralEndTime] = useState('');
 
   const [ruralActivityType, setRuralActivityType] = useState('Traslado / Disponibilidad');
+  const [ruralSelectedDoctorId, setRuralSelectedDoctorId] = useState('');
+  const [ruralViewMode, setRuralViewMode] = useState<'table' | 'cards'>('table');
+  const [signingAvailability, setSigningAvailability] = useState<RuralAvailability | null>(null);
+  const [showVerifyModal, setShowVerifyModal] = useState(false);
+  const [emergencyConfig, setEmergencyConfig] = useState<{ rojoRoles: string[], azulRoles: string[] }>({
+    rojoRoles: ['Enfermero Jefe', 'Jefe de Partos', 'Médico Obstetra/Ginecólogo'],
+    azulRoles: ['Interno', 'Médico Rural', 'Médico General']
+  });
+
+  const ALL_ROLES: DoctorRole[] = [
+    'Médico Rural', 
+    'Médico General', 
+    'Médico Especialista', 
+    'Enfermero Jefe', 
+    'Auxiliar Enfermería', 
+    'Interno', 
+    'Triage', 
+    'Laboratorio', 
+    'Odontólogo',
+    'Especialista',
+    'Fisioterapeuta',
+    'Rayos X',
+    'Médico Obstetra/Ginecólogo',
+    'Jefe de Partos'
+  ];
+
+  useEffect(() => {
+    const ruralDocs = doctors.filter(d => d.cat === 'Rural' && d.st === 'activo');
+    if (session?.doctorId) {
+      const docData = doctors.find(d => d.id === session.doctorId);
+      if (docData && docData.cat === 'Rural') {
+        setRuralSelectedDoctorId(session.doctorId.toString());
+        return;
+      }
+    }
+    if (ruralDocs.length > 0 && !ruralSelectedDoctorId) {
+      setRuralSelectedDoctorId(ruralDocs[0].id.toString());
+    }
+  }, [session, doctors, ruralSelectedDoctorId]);
+
   const [showInductionManual, setShowInductionManual] = useState(false);
   const [showAntibioticManual, setShowAntibioticManual] = useState(false);
 
@@ -550,6 +608,146 @@ export default function App() {
     return ['Médico Rural', 'Médico General', 'Triage', 'Enfermero Jefe', 'Médico Especialista', 'Intensivista'].some(r => role.includes(r)) || 
            (currentUserProfile.cat === 'Planta' && role.includes('Médico'));
   }, [session?.r, currentUserProfile]);
+
+  const availCallAuthorizers = useMemo(() => {
+    return doctors.filter(d => 
+      d.st === 'activo' && 
+      (d.rol === 'Enfermero Jefe' || d.rol === 'Jefe de Partos' || d.permissions?.includes('authorize_availability') || d.permissions?.includes('admin'))
+    );
+  }, [doctors]);
+
+  const ruralOverlapInfo = useMemo(() => {
+    if (!ruralSelectedDoctorId || !ruralCallDate || !ruralCallTime || !ruralEndDate || !ruralEndTime) {
+      return { grossHours: 0, deduction: 0, netHours: 0, overlaps: [] as { day: number, slot: string, sigla: string, overlapHours: number }[] };
+    }
+
+    const start = new Date(`${ruralCallDate}T${ruralCallTime}`);
+    const end = new Date(`${ruralEndDate}T${ruralEndTime}`);
+    if (isNaN(start.getTime()) || isNaN(end.getTime()) || end <= start) {
+      return { grossHours: 0, deduction: 0, netHours: 0, overlaps: [] };
+    }
+
+    const grossHours = (end.getTime() - start.getTime()) / (1000 * 60 * 60);
+    let deduction = 0;
+    const overlaps: { day: number, slot: string, sigla: string, overlapHours: number }[] = [];
+
+    const targetDoctor = doctors.find(d => d.id === Number(ruralSelectedDoctorId));
+    if (!targetDoctor) {
+      return { grossHours, deduction, netHours: grossHours, overlaps };
+    }
+
+    // Schedule rules for rural overlap:
+    // 14m: 6am to 12pm
+    // 14t: 12pm to 6pm
+    // 14n: 6pm to 12am (00:00)
+    const getRuralSlotInterval = (day: number, slot: 'm' | 't' | 'n', month: number, year: number) => {
+      const d = new Date(year, month, day);
+      let s = new Date(d);
+      let e = new Date(d);
+      if (slot === 'm') { s.setHours(6, 0, 0, 0); e.setHours(12, 0, 0, 0); }
+      else if (slot === 't') { s.setHours(12, 0, 0, 0); e.setHours(18, 0, 0, 0); }
+      else if (slot === 'n') { s.setHours(18, 0, 0, 0); e.setHours(24, 0, 0, 0); } // 12am next day is 24 of today
+      return { s, e };
+    };
+
+    const docShifts = currentMonthData[targetDoctor.id];
+    if (docShifts) {
+      for (let day = 1; day <= daysInMonth; day++) {
+        (['m', 't', 'n'] as const).forEach(slot => {
+          const sigla = docShifts[slot]?.[day];
+          if (sigla && sigla !== 'X' && sigla !== 'L' && sigla !== '') {
+            const interval = getRuralSlotInterval(day, slot, selectedMonth, selectedYear);
+            
+            // Check intersection between [start, end] and [interval.s, interval.e]
+            const intersectStart = Math.max(start.getTime(), interval.s.getTime());
+            const intersectEnd = Math.min(end.getTime(), interval.e.getTime());
+            
+            if (intersectStart < intersectEnd) {
+              const overlapHours = (intersectEnd - intersectStart) / (1000 * 60 * 60);
+              if (overlapHours > 0) {
+                deduction += overlapHours;
+                overlaps.push({
+                  day,
+                  slot: slot === 'm' ? '14m' : slot === 't' ? '14t' : '14n',
+                  sigla,
+                  overlapHours
+                });
+              }
+            }
+          }
+        });
+      }
+    }
+
+    const netHours = Math.max(0, grossHours - deduction);
+    return { grossHours, deduction, netHours, overlaps };
+  }, [ruralSelectedDoctorId, ruralCallDate, ruralCallTime, ruralEndDate, ruralEndTime, doctors, currentMonthData, daysInMonth, selectedMonth, selectedYear]);
+
+  const isDoctorOnDutyToday = (doctorId: number) => {
+    const now = new Date();
+    const day = now.getDate();
+    // Determine Slot
+    const currentHour = now.getHours();
+    let slot: SlotType = 'm';
+    if (currentHour >= 14 && currentHour < 22) slot = 't';
+    else if (currentHour >= 22 || currentHour < 6) slot = 'n';
+
+    const docShifts = currentMonthData[doctorId];
+    if (!docShifts) return false;
+    const dayShifts = docShifts[slot];
+    if (!dayShifts) return false;
+    const sigla = dayShifts[day];
+    return sigla && sigla !== 'X' && sigla !== 'DESC' && sigla !== 'PT';
+  };
+
+  const isDoctorOnDutyOnDate = (doctorId: number, dateStr: string, timeStr: string) => {
+    try {
+      if (!dateStr) return false;
+      const date = new Date(dateStr + 'T12:00:00'); // Use mid-day to avoid TZ shifts
+      const day = date.getDate();
+      const month = date.getMonth();
+      const year = date.getFullYear();
+
+      let slot: SlotType = 'm';
+      if (timeStr) {
+        const hour = parseInt(timeStr.split(':')[0]);
+        if (hour >= 14 && hour < 22) slot = 't';
+        else if (hour >= 22 || hour < 6) slot = 'n';
+      }
+
+      if (month !== selectedMonth || year !== selectedYear) {
+        return false;
+      }
+
+      const docShifts = currentMonthData[doctorId];
+      if (!docShifts) return false;
+      const dayShifts = docShifts[slot];
+      if (!dayShifts) return false;
+      const sigla = dayShifts[day];
+      return sigla && sigla !== 'X' && sigla !== 'DESC' && sigla !== 'PT';
+    } catch {
+      return false;
+    }
+  };
+
+  const pendingAuthorizations = useMemo(() => {
+    if (!session) return [];
+    if (session.r === 'admin') {
+      return ruralAvailabilities.filter(r => r.authorizedStatus === 'pending');
+    }
+    if (session.doctorId) {
+      const docData = doctors.find(d => d.id === session.doctorId);
+      const isJefe = docData && ['Enfermero Jefe', 'Jefe de Partos', 'Médico Especialista', 'Médico Obstetra/Ginecólogo'].includes(docData.rol);
+      const onDuty = docData ? isDoctorOnDutyToday(docData.id) : false;
+
+      if (isJefe && onDuty) {
+        return ruralAvailabilities.filter(r => r.authorizedStatus === 'pending');
+      } else {
+        return ruralAvailabilities.filter(r => r.authorizedStatus === 'pending' && r.calledById === session.doctorId);
+      }
+    }
+    return [];
+  }, [ruralAvailabilities, session, doctors, currentMonthData]);
 
   // -- Initialization & Auth --
   useEffect(() => {
@@ -740,6 +938,30 @@ export default function App() {
       }
     }, (err) => handleFirestoreError(err, OperationType.GET, 'settings/serviceMappings'));
 
+    // Emergency Notifications
+    const unsubEmergency = onSnapshot(doc(db, 'settings', 'emergency_notifications'), (snap) => {
+      if (snap.exists()) {
+        const d = snap.data();
+        setEmergencyConfig({
+          rojoRoles: d.rojoRoles || ['Enfermero Jefe', 'Jefe de Partos', 'Médico Obstetra/Ginecólogo'],
+          azulRoles: d.azulRoles || ['Interno', 'Médico Rural', 'Médico General']
+        });
+      }
+    }, (err) => handleFirestoreError(err, OperationType.GET, 'settings/emergency_notifications'));
+
+    // Census Notification Configuration
+    const unsubCensusConfig = onSnapshot(doc(db, 'settings', 'census_notification'), (snap) => {
+      if (snap.exists()) {
+        const d = snap.data();
+        setCensusNotificationConfig({
+          enabled: d.enabled !== undefined ? d.enabled : true,
+          time: d.time || '18:00',
+          message: d.message || 'Recordatorio: Recuerde reportar el censo diario de su servicio.',
+          lastTriggeredDay: d.lastTriggeredDay || ''
+        });
+      }
+    }, (err) => handleFirestoreError(err, OperationType.GET, 'settings/census_notification'));
+
     return () => {
       unsubDocs();
       unsubLogs();
@@ -751,6 +973,8 @@ export default function App() {
       unsubVars();
       unsubTheme();
       unsubMappings();
+      unsubEmergency();
+      unsubCensusConfig();
     };
   }, [fbUser]);
 
@@ -892,8 +1116,8 @@ export default function App() {
       }
 
       let isTarget = hasSigla;
-      if (type === 'ROJO' && doctor.rol === 'Enfermero Jefe') isTarget = true;
-      if (type === 'AZUL' && doctor.rol === 'Interno') isTarget = true;
+      if (type === 'ROJO' && emergencyConfig.rojoRoles.includes(doctor.rol)) isTarget = true;
+      if (type === 'AZUL' && emergencyConfig.azulRoles.includes(doctor.rol)) isTarget = true;
 
       if (isTarget) {
         pushNotification(docId, message);
@@ -901,14 +1125,14 @@ export default function App() {
       }
     });
 
-    // Also forcefully include any Interno / Jefe even if they have no shift data yet
+    // Also forcefully include any configured roles even if they have no shift data yet
     doctors.forEach(doctor => {
       if (doctor.st !== 'activo') return;
       if (notifiedDocs.some(d => d.id === doctor.id)) return;
 
       let isTarget = false;
-      if (type === 'ROJO' && doctor.rol === 'Enfermero Jefe') isTarget = true;
-      if (type === 'AZUL' && doctor.rol === 'Interno') isTarget = true;
+      if (type === 'ROJO' && emergencyConfig.rojoRoles.includes(doctor.rol)) isTarget = true;
+      if (type === 'AZUL' && emergencyConfig.azulRoles.includes(doctor.rol)) isTarget = true;
 
       if (isTarget) {
         pushNotification(doctor.id, message);
@@ -1711,10 +1935,186 @@ Donde doctorId es el ID numérico del médico y las llaves de los días son del 
     }
   };
 
+  const getDoctorTurneroHours = (docId: number): number => {
+    let total = 0;
+    const docData = currentMonthData[docId];
+    if (docData) {
+      for (let d = 1; d <= daysInMonth; d++) {
+        (['m', 't', 'n'] as SlotType[]).forEach(slot => {
+          const sigla = docData[slot]?.[d] || 'X';
+          total += getVarHours(slot, sigla);
+        });
+      }
+    }
+    return total;
+  };
+
+  const syncRuralAvailabilitiesToDrive = async (silent: boolean = true, extraEntry?: RuralAvailability) => {
+    try {
+      const token = localStorage.getItem('google_access_token');
+      if (!token) {
+        if (!silent) alert("No se encontró el token de acceso de Google. Por favor, inicie sesión con Google.");
+        return;
+      }
+
+      const rootFolderId = await GoogleDriveService.getRootFolderId();
+      const fileName = `Disponibilidades_Rurales_${MONTH_NAMES[selectedMonth]}_${selectedYear}`;
+      const spreadsheetId = await GoogleDriveService.findOrCreateSheet(fileName, rootFolderId);
+      
+      let filtered = ruralAvailabilities.filter(r => r.targetMonth === selectedMonth && r.targetYear === selectedYear);
+      
+      if (extraEntry && extraEntry.targetMonth === selectedMonth && extraEntry.targetYear === selectedYear) {
+        if (!filtered.some(r => r.id === extraEntry.id)) {
+          filtered = [...filtered, extraEntry];
+        }
+      }
+
+      // Check field consistency before sync, log specific missing fields and prevent sync if coherence is low
+      const inconsistentRecords: string[] = [];
+      filtered.forEach(r => {
+        const missingFields: string[] = [];
+        if (!r.patientName || r.patientName.trim() === "") {
+          missingFields.push("Paciente");
+        }
+        if (!r.diagnosis || r.diagnosis.trim() === "") {
+          missingFields.push("Diagnóstico");
+        }
+        if (!r.patientId || r.patientId.trim() === "") {
+          missingFields.push("Cédula / Documento");
+        }
+        
+        const activityVal = (r.activityType || '') + (r.textLibre || '') + (r.activity || '');
+        if (!activityVal || activityVal.trim() === "") {
+          missingFields.push("Actividad");
+        }
+
+        if (missingFields.length > 0) {
+          const detail = `ID: ${r.id} | Médico: ${r.doctorName} | Faltan: ${missingFields.join(", ")}`;
+          console.error(`[CRITICAL DATA INCOHERENCE] ${detail}`);
+          inconsistentRecords.push(detail);
+        }
+      });
+
+      if (inconsistentRecords.length > 0) {
+        const errorMsg = `No se puede sincronizar con Google Drive debido a baja coherencia de datos (${inconsistentRecords.length} registros incompletos).\n\nCampos obligatorios faltantes detectados:\n${inconsistentRecords.slice(0, 5).join("\n")}${inconsistentRecords.length > 5 ? '\n... y otros' : ''}\n\nPor favor, corrija los datos antes de volver a intentar.`;
+        if (!silent) {
+          alert(errorMsg);
+        } else {
+          console.warn(`[Drive Sync Aborted] ${errorMsg}`);
+        }
+        return; // EVITA LA SINCRONIZACIÓN
+      }
+
+      const header = [
+        "ID",
+        "MÉDICO",
+        "FECHA LLAMADO",
+        "HORA LLAMADO",
+        "LLEGADA HOSPITAL",
+        "TIPO ACTIVIDAD",
+        "TEXTO LIBRE",
+        "PACIENTE",
+        "CÉDULA / DOCUMENTO",
+        "DIAGNÓSTICO",
+        "LUGAR ACEPTACIÓN",
+        "QUIEN LO LLAMÓ",
+        "FECHA TÉRMINO",
+        "HORA TÉRMINO",
+        "HORAS BRUTAS",
+        "DEDUCCIÓN",
+        "HORAS NETAS (RURAL)",
+        "HORAS TURNERO",
+        "CONSOLIDADO TOTAL (MES)"
+      ];
+      
+      const values = [header];
+      filtered.forEach(r => {
+        const docTurnero = getDoctorTurneroHours(r.doctorId);
+        const docRuralHours = filtered
+          .filter(x => x.doctorId === r.doctorId)
+          .reduce((sum, x) => sum + (x.netHours !== undefined ? x.netHours : (x.totalHours || 0)), 0);
+        const consolidated = docTurnero + docRuralHours;
+
+        values.push([
+          r.id || '',
+          r.doctorName || '',
+          r.callDate || '',
+          r.callTime || '',
+          r.hospitalArrivalTime || '',
+          r.activityType || '',
+          r.textLibre || '',
+          r.patientName || '',
+          r.patientId || '',
+          r.diagnosis || '',
+          r.acceptancePlace || '',
+          r.calledBy || 'No especificado',
+          r.endDate || '',
+          r.endTime || '',
+          r.grossHours !== undefined ? r.grossHours : (r.totalHours || 0),
+          r.deduction !== undefined ? r.deduction : 0,
+          r.netHours !== undefined ? r.netHours : (r.totalHours || 0),
+          docTurnero,
+          consolidated
+        ] as any[]);
+      });
+
+      await GoogleDriveService.updateSheetValues(spreadsheetId, 'Sheet1!A1', values);
+      if (!silent) {
+        setNotification({
+          message: `¡Disponibilidades sincronizadas a Google Drive!`,
+          type: 'success'
+        });
+        setTimeout(() => setNotification(null), 3000);
+      }
+    } catch (err: any) {
+      console.error("Error sincronizando disponibilidades a Drive:", err);
+      if (!silent) {
+        alert(`Error al sincronizar con Google Drive: ${err.message || err}`);
+      }
+    }
+  };
+
   const submitRuralAvailability = async () => {
-    if (!session?.doctorId) return;
-    if (!ruralCallDate || !ruralCallTime || !ruralEndDate || !ruralEndTime || !ruralPatientName) {
-      return alert("Por favor complete los campos obligatorios.");
+    const selectedDocId = Number(ruralSelectedDoctorId);
+    if (!selectedDocId) {
+      return alert("Por favor seleccione el médico rural que realiza la disponibilidad.");
+    }
+
+    const targetDoctor = doctors.find(d => d.id === selectedDocId);
+    if (!targetDoctor) {
+      return alert("El médico seleccionado no es válido.");
+    }
+
+    if (!ruralCallDate || !ruralCallTime) {
+      return alert("Por favor ingrese la fecha y hora de inicio del llamado.");
+    }
+
+    if (!ruralEndDate || !ruralEndTime) {
+      return alert("Por favor ingrese la fecha y hora de término del llamado.");
+    }
+
+    if (!ruralPatientName || ruralPatientName.trim() === "") {
+      return alert("Por favor ingrese el nombre del paciente.");
+    }
+
+    if (!ruralPatientId || ruralPatientId.trim() === "") {
+      return alert("Por favor ingrese la cédula / documento del paciente.");
+    }
+
+    if (!ruralDiagnosis || ruralDiagnosis.trim() === "") {
+      return alert("Por favor ingrese el diagnóstico.");
+    }
+
+    if (!ruralAcceptancePlace || ruralAcceptancePlace.trim() === "") {
+      return alert("Por favor ingrese el lugar de aceptación / remisión.");
+    }
+
+    if (!ruralActivityType || ruralActivityType.trim() === "") {
+      return alert("Por favor seleccione el tipo de actividad.");
+    }
+
+    if (!ruralCalledById) {
+      return alert("Por favor seleccione el autorizador que realizó el llamado.");
     }
 
     const start = new Date(`${ruralCallDate}T${ruralCallTime}`);
@@ -1724,73 +2124,71 @@ Donde doctorId es el ID numérico del médico y las llaves de los días son del 
       return alert("La fecha de término no puede ser anterior a la de llamado.");
     }
 
-    // -- Calculate overlap with existing shifts --
-    // We deduct hours if the doctor had a shift during the reported availability
-    let totalGrossHours = (end.getTime() - start.getTime()) / (1000 * 60 * 60);
-    let deduction = 0;
-
-    // Helper to get slot interval
-    const getSlotInterval = (day: number, slot: SlotType, month: number, year: number) => {
-      const d = new Date(year, month, day);
-      let s = new Date(d);
-      let e = new Date(d);
-      if (slot === 'm') { s.setHours(7,0,0,0); e.setHours(13,0,0,0); }
-      if (slot === 't') { s.setHours(13,0,0,0); e.setHours(19,0,0,0); }
-      if (slot === 'n') { s.setHours(19,0,0,0); e.setDate(e.getDate() + 1); e.setHours(7,0,0,0); }
-      return { s, e };
-    };
-
-    const docShifts = currentMonthData[session.doctorId];
-    if (docShifts) {
-      // Check each day of the month for overlaps
-      for (let day = 1; day <= daysInMonth; day++) {
-        (['m', 't', 'n'] as SlotType[]).forEach(slot => {
-          const sigla = docShifts[slot][day];
-          // If sigla exists and is not empty or 'L' (libre), it considers it a programmed shift
-          if (sigla && sigla !== 'X' && sigla !== 'L') {
-            const interval = getSlotInterval(day, slot, selectedMonth, selectedYear);
-            
-            // Check intersection between [start, end] and [interval.s, interval.e]
-            const intersectStart = Math.max(start.getTime(), interval.s.getTime());
-            const intersectEnd = Math.min(end.getTime(), interval.e.getTime());
-            
-            if (intersectStart < intersectEnd) {
-              const overlapHours = (intersectEnd - intersectStart) / (1000 * 60 * 60);
-              deduction += overlapHours;
-            }
-          }
-        });
-      }
-    }
-
-    const finalHours = Math.max(0, totalGrossHours - deduction);
+    const { deduction, netHours, grossHours } = ruralOverlapInfo;
     
     if (deduction > 0) {
-      if (!confirm(`Se detectó un cruce de ${deduction.toFixed(1)}h con turnos ya programados. Estas horas se descontarán del reporte (Total: ${finalHours.toFixed(1)}h). ¿Desea continuar?`)) return;
+      if (!confirm(`Se detectó un cruce de ${deduction.toFixed(1)}h con turnos programados del Dr(a). ${targetDoctor.nombre}. El reporte guardará el tiempo total de ${grossHours.toFixed(1)}h. ¿Desea continuar?`)) return;
     }
 
     const id = Date.now().toString();
-    const newEntry: RuralAvailability = {
+    const newEntry: any = {
       id,
-      doctorId: session.doctorId,
-      doctorName: session.n,
+      doctorId: targetDoctor.id,
+      doctorName: targetDoctor.nombre,
       callDateTime: start.getTime(),
-      hospitalArrivalTime: ruralHospitalArrival,
-      activity: `${ruralActivityType}: ${ruralActivity}`,
-      patientName: ruralPatientName,
-      patientId: ruralPatientId,
-      diagnosis: ruralDiagnosis,
-      acceptancePlace: ruralAcceptancePlace,
-      calledBy: ruralCalledBy,
+      hospitalArrivalTime: ruralHospitalArrival || '',
+      activity: `${ruralActivityType}: ${ruralActivity}`.trim(),
+      patientName: ruralPatientName || '',
+      patientId: ruralPatientId || '',
+      diagnosis: ruralDiagnosis || '',
+      acceptancePlace: ruralAcceptancePlace || '',
+      calledBy: ruralCalledBy || 'No especificado',
+      calledById: Number(ruralCalledById) || null,
       terminationDateTime: end.getTime(),
-      totalHours: Number(finalHours.toFixed(2)),
+      totalHours: Number(grossHours.toFixed(2)), // Sume las horas tal cual este drive
       timestamp: Date.now(),
       targetMonth: selectedMonth,
-      targetYear: selectedYear
+      targetYear: selectedYear,
+      authorizedStatus: Number(ruralCalledById) ? 'pending' : null,
+      
+      // Explicit separate database fields for all app form data
+      activityType: ruralActivityType || '',
+      textLibre: ruralActivity || '',
+      callDate: ruralCallDate || '',
+      callTime: ruralCallTime || '',
+      endDate: ruralEndDate || '',
+      endTime: ruralEndTime || '',
+      grossHours: Number(grossHours.toFixed(2)),
+      deduction: Number(deduction.toFixed(2)),
+      netHours: Number(netHours.toFixed(2))
     };
+
+    // Eliminate any undefined properties to be 100% safe for Firestore
+    Object.keys(newEntry).forEach(key => {
+      if (newEntry[key] === undefined) {
+        delete newEntry[key];
+      }
+    });
 
     try {
       await setDoc(doc(db, 'ruralAvailability', id), newEntry);
+      
+      // Send push notification to the authorizer
+      if (Number(ruralCalledById)) {
+        const notifMsg = `🚨 NUEVO REPORTE RURAL: El Dr(a). ${targetDoctor.nombre} registró un reporte para el paciente: ${ruralPatientName || 'N/A'}, Cédula: ${ruralPatientId || 'N/A'}. Requiere su firma de autorización para consolidar las horas.`;
+        try {
+          await pushNotification(Number(ruralCalledById), notifMsg);
+        } catch (notifErr) {
+          console.warn("Could not send push notification:", notifErr);
+        }
+      }
+
+      // Auto sync to Google Drive
+      try {
+        await syncRuralAvailabilitiesToDrive(true, newEntry);
+      } catch (driveErr) {
+        console.warn("Could not auto sync to Google Drive:", driveErr);
+      }
       
       // Reset Form
       setRuralCallDate('');
@@ -1802,14 +2200,15 @@ Donde doctorId es el ID numérico del médico y las llaves de los días son del 
       setRuralDiagnosis('');
       setRuralAcceptancePlace('');
       setRuralCalledBy('');
+      setRuralCalledById('');
       setRuralEndDate('');
       setRuralEndTime('');
       setRuralActivityType('Traslado / Disponibilidad');
 
       setNotification({ 
         message: isOnline 
-          ? `Reporte guardado (${finalHours.toFixed(1)}h netas)` 
-          : `Reporte guardado localmente (${finalHours.toFixed(1)}h). Se sincronizará pronto.`, 
+          ? `Reporte guardado y sincronizado (${grossHours.toFixed(1)}h)` 
+          : `Reporte guardado localmente (${grossHours.toFixed(1)}h). Se sincronizará pronto.`, 
         type: 'success' 
       });
       setTimeout(() => setNotification(null), 3000);
@@ -1843,6 +2242,24 @@ Donde doctorId es el ID numérico del médico y las llaves de los días son del 
     link.download = `Solicitudes_Cambios_${selectedMonth + 1}_${selectedYear}.txt`;
     link.click();
     URL.revokeObjectURL(url);
+  };
+
+  const handleSignAvailability = async (signatureDataUrl: string) => {
+    if (!signingAvailability) return;
+    try {
+      await updateDoc(doc(db, 'ruralAvailability', signingAvailability.id), {
+        authorizedStatus: 'signed',
+        authorizerSignature: signatureDataUrl,
+        authorizedTimestamp: Date.now()
+      });
+      
+      setSigningAvailability(null);
+      setNotification({ message: "Disponibilidad autorizada con éxito y firma digital guardada.", type: 'success' });
+      setTimeout(() => setNotification(null), 3000);
+    } catch (err) {
+      console.error("Error signing availability:", err);
+      alert("Error al firmar la disponibilidad: " + (err as Error).message);
+    }
   };
 
   const toggleDoctorStatus = async (id: number) => {
@@ -2311,10 +2728,16 @@ Donde doctorId es el ID numérico del médico y las llaves de los días son del 
         // Prepare data
         const data = getFilteredTurneroData();
         const daysArr = Array.from({ length: daysInMonth }, (_, i) => (i + 1).toString());
-        const header = ["MÉDICO", "JORNADA", ...daysArr, "TOTAL"];
+        const header = ["MÉDICO", "JORNADA", ...daysArr, "HORAS TURNERO", "HORAS RURAL EFEC.", "TOTAL"];
         
         const values = [header];
         data.forEach(({ med, medTotalMonth }) => {
+          const doctorRuralHours = ruralAvailabilities
+            .filter(r => r.doctorId === med.id && r.targetMonth === selectedMonth && r.targetYear === selectedYear)
+            .reduce((sum, r) => sum + (r.netHours !== undefined ? r.netHours : (r.totalHours || 0)), 0);
+
+          const combinedTotal = medTotalMonth + doctorRuralHours;
+
           (['m', 't', 'n'] as SlotType[]).forEach((slot, sIdx) => {
             const row: any[] = [
               sIdx === 0 ? med.nombre : '',
@@ -2325,6 +2748,8 @@ Donde doctorId es el ID numérico del médico y las llaves de los días son del 
               row.push(val.toUpperCase() !== 'X' ? (showGridHours ? `${val} (${getVarHours(slot, val)})` : val) : '');
             }
             row.push(sIdx === 0 ? medTotalMonth.toString() : '');
+            row.push(sIdx === 0 ? doctorRuralHours.toString() : '');
+            row.push(sIdx === 0 ? combinedTotal.toString() : '');
             values.push(row);
           });
         });
@@ -2379,11 +2804,13 @@ Donde doctorId es el ID numérico del médico y las llaves de los días son del 
     const data = getFilteredTurneroData();
     const rows: any[] = [];
 
-    // Header Row for manual formula mapping later if needed, 
-    // but SheetJS uses 'A1', 'B1' etc.
-    // 1-indexed for XLSX
-    
     data.forEach(({ med, medTotalMonth }) => {
+      const doctorRuralHours = ruralAvailabilities
+        .filter(r => r.doctorId === med.id && r.targetMonth === selectedMonth && r.targetYear === selectedYear)
+        .reduce((sum, r) => sum + (r.netHours !== undefined ? r.netHours : (r.totalHours || 0)), 0);
+
+      const combinedTotal = medTotalMonth + doctorRuralHours;
+
       (['m', 't', 'n'] as SlotType[]).forEach((slot, sIdx) => {
         const rowData: any = {
           'MÉDICO': sIdx === 0 ? med.nombre : '',
@@ -2394,44 +2821,14 @@ Donde doctorId es el ID numérico del médico y las llaves de los días son del 
           rowData[d.toString()] = val.toUpperCase() !== 'X' ? (showGridHours ? `${val} (${getVarHours(slot, val)})` : val) : '';
         }
         
-        // We will add the formula in the worksheet object directly after json_to_sheet
-        if (sIdx === 0) rowData['TOTAL HORAS'] = medTotalMonth;
+        rowData['HORAS TURNERO'] = sIdx === 0 ? medTotalMonth : '';
+        rowData['HORAS RURAL EFEC.'] = sIdx === 0 ? doctorRuralHours : '';
+        rowData['TOTAL HORAS'] = sIdx === 0 ? combinedTotal : '';
         rows.push(rowData);
       });
     });
 
     const ws = XLSX.utils.json_to_sheet(rows);
-    
-    // Add formulas for TOTAL HORAS
-    // Column Index for 'TOTAL HORAS' is: MÉDICO (0), JORNADA (1), Days (1 to daysInMonth), then TOTAL (2 + daysInMonth)
-    const totalColIdx = 2 + daysInMonth;
-    const totalColLetter = XLSX.utils.encode_col(totalColIdx);
-    
-    data.forEach((_, idx) => {
-      const rowNum = (idx * 3) + 2; // +2 for header and 0-indexing
-      // Sum the 3 rows' hours if they were all converted to numbers? 
-      // Actually, we want to sum the specific values for the doctor across the 3 rows.
-      // But let's just make the existing calculated total a value for now, or use a complex formula.
-      // The user wants "the same parameters", so maybe just a sum of the days?
-      // Since SheetJS json_to_sheet doesn't easily support multi-row formulas per cell, 
-      // we'll just set the value we calculated.
-      // However, to satisfy "Excel with formula", I'll add a SUM of the row.
-      // But wait, the total is only for the first row of the 3-row group.
-      
-      const startCol = XLSX.utils.encode_col(2); // Day 1
-      const endCol = XLSX.utils.encode_col(1 + daysInMonth); // Last day
-      
-      // We'll set formulas for all 3 rows just in case, but usually it's one per doc
-      for(let j=0; j<3; j++) {
-        const r = rowNum + j;
-        const cellRef = `${totalColLetter}${r}`;
-        if (showGridHours) {
-           const startCell = XLSX.utils.encode_cell({r: r-1, c: 2});
-           const endCell = XLSX.utils.encode_cell({r: r-1, c: 1 + daysInMonth});
-           ws[cellRef] = { t: 'n', f: `SUM(${startCell}:${endCell})` };
-        }
-      }
-    });
 
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, `Turnero_${MONTH_NAMES[selectedMonth]}`);
@@ -2445,10 +2842,16 @@ Donde doctorId es el ID numérico del médico y las llaves de los días son del 
     
     const data = getFilteredTurneroData();
     const daysArr = Array.from({ length: daysInMonth }, (_, i) => (i + 1).toString());
-    const tableColumn = ["MÉDICO", "JORNADA", ...daysArr, "TOTAL"];
+    const tableColumn = ["MÉDICO", "JORNADA", ...daysArr, "H. TURNERO", "H. RURAL EFEC.", "TOTAL"];
     
     const tableRows: any[] = [];
     data.forEach(({ med, medTotalMonth }) => {
+      const doctorRuralHours = ruralAvailabilities
+        .filter(r => r.doctorId === med.id && r.targetMonth === selectedMonth && r.targetYear === selectedYear)
+        .reduce((sum, r) => sum + (r.netHours !== undefined ? r.netHours : (r.totalHours || 0)), 0);
+
+      const combinedTotal = medTotalMonth + doctorRuralHours;
+
       (['m', 't', 'n'] as SlotType[]).forEach((slot, sIdx) => {
         const row: any[] = [
           sIdx === 0 ? med.nombre : '',
@@ -2459,6 +2862,8 @@ Donde doctorId es el ID numérico del médico y las llaves de los días son del 
           row.push(val.toUpperCase() !== 'X' ? (showGridHours ? `${val} (${getVarHours(slot, val)})` : val) : '');
         }
         row.push(sIdx === 0 ? `${medTotalMonth}h` : '');
+        row.push(sIdx === 0 ? `${doctorRuralHours}h` : '');
+        row.push(sIdx === 0 ? `${combinedTotal}h` : '');
         tableRows.push(row);
       });
     });
@@ -2525,7 +2930,12 @@ Donde doctorId es el ID numérico del médico y las llaves de los días son del 
     }
   };
 
-  const isAdminUser = session?.r === 'admin';
+  const isAdminUser = session?.r === 'admin' || session?.r === 'root';
+  const isJefeDeServicio = useMemo(() => {
+    if (session?.r === 'admin') return true;
+    if (!currentUserProfile) return false;
+    return ['Enfermero Jefe', 'Jefe de Partos', 'Médico Especialista', 'Médico Obstetra/Ginecólogo'].includes(currentUserProfile.rol);
+  }, [session?.r, currentUserProfile]);
   const isSignedInUser = !!fbUser;
 
   // -- Cycle Logic --
@@ -2867,6 +3277,703 @@ Donde doctorId es el ID numérico del médico y las llaves de los días son del 
     });
 
     doc.save(`Novedades_${MONTH_NAMES[selectedMonth]}_${selectedYear}.pdf`);
+  };
+
+  const drawHospitalLogoVector = (doc: any, x: number, y: number, scale: number = 1) => {
+    // Drawn with green #0f5132 (RGB: 15, 81, 50)
+    doc.setDrawColor(15, 81, 50);
+    doc.setFillColor(255, 255, 255);
+    doc.setLineWidth(1.5 * scale);
+    
+    // Outer ellipse/oval
+    doc.ellipse(x + 40 * scale, y + 50 * scale, 35 * scale, 45 * scale, 'FD');
+    doc.setLineWidth(0.5 * scale);
+    doc.ellipse(x + 40 * scale, y + 50 * scale, 32 * scale, 42 * scale, 'S');
+
+    // Inner arch
+    doc.setLineWidth(1 * scale);
+    doc.ellipse(x + 40 * scale, y + 50 * scale, 18 * scale, 28 * scale, 'S');
+
+    // Central flower representation
+    doc.setLineWidth(1 * scale);
+    doc.line(x + 40 * scale, y + 35 * scale, x + 40 * scale, y + 75 * scale); // Stem
+    
+    // Side curves for leaves
+    doc.ellipse(x + 36 * scale, y + 55 * scale, 3 * scale, 1.5 * scale, 'S');
+    doc.ellipse(x + 44 * scale, y + 55 * scale, 3 * scale, 1.5 * scale, 'S');
+
+    // Lily petals
+    doc.ellipse(x + 40 * scale, y + 42 * scale, 2 * scale, 5 * scale, 'S');
+    doc.ellipse(x + 36 * scale, y + 45 * scale, 4 * scale, 2 * scale, 'S');
+    doc.ellipse(x + 44 * scale, y + 45 * scale, 4 * scale, 2 * scale, 'S');
+
+    // Text labels
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(5 * scale);
+    doc.setTextColor(15, 81, 50);
+    doc.text("HOSPITAL DEPARTAMENTAL", x + 40 * scale, y + 10 * scale, { align: "center" });
+    doc.setFontSize(7 * scale);
+    doc.text("SAN ANTONIO", x + 40 * scale, y + 102 * scale, { align: "center" });
+    doc.setFontSize(4.5 * scale);
+    doc.text("ROLDANILLO - VALLE", x + 40 * scale, y + 110 * scale, { align: "center" });
+  };
+
+  const exportRuralConsolidatedExcel = () => {
+    const filtered = ruralAvailabilities.filter(r => r.targetMonth === selectedMonth && r.targetYear === selectedYear);
+    if (filtered.length === 0) return alert("No hay datos de disponibilidad para este mes.");
+
+    // Sheet 1: Resumen Estadístico
+    const activeRuralDocs = doctors.filter(d => d.cat === 'Rural' && d.st === 'activo');
+    const totalTurnero = activeRuralDocs.reduce((sum, doc) => sum + getDoctorTurneroHours(doc.id), 0);
+    const totalDispo = filtered.reduce((sum, r) => sum + (r.netHours !== undefined ? r.netHours : (r.totalHours || 0)), 0);
+    const totalConsolidado = totalTurnero + totalDispo;
+
+    const summaryRows = [
+      ["REPORTE MENSUAL CONSOLIDADO DE DISPONIBILIDADES"],
+      ["ESE HOSPITAL DEPARTAMENTAL SAN ANTONIO - ROLDANILLO"],
+      [`Periodo: ${MONTH_NAMES[selectedMonth]} ${selectedYear}`],
+      [],
+      ["RESUMEN ESTADÍSTICO DE HORAS RURALES"],
+      ["Concepto", "Valor"],
+      ["Total de Registros de Disponibilidad", filtered.length],
+      ["Total Horas de Turnero Programadas", `${totalTurnero.toFixed(1)}h`],
+      ["Total Horas de Disponibilidad Rural Efectivas", `${totalDispo.toFixed(1)}h`],
+      ["Consolidado Total del Personal Rural", `${totalConsolidado.toFixed(1)}h`],
+      [],
+      ["ACUMULADO POR MÉDICO RURAL"],
+      ["Médico", "Horas Turnero", "Horas Rural Efectivas", "Total Consolidado"]
+    ];
+
+    activeRuralDocs.forEach(doc => {
+      const turneroH = getDoctorTurneroHours(doc.id);
+      const ruralH = filtered
+        .filter(r => r.doctorId === doc.id)
+        .reduce((sum, r) => sum + (r.netHours !== undefined ? r.netHours : (r.totalHours || 0)), 0);
+      const consolidatedH = turneroH + ruralH;
+      summaryRows.push([`${doc.nombre} ${doc.apellidos || ''}`, `${turneroH.toFixed(1)}h`, `${ruralH.toFixed(1)}h`, `${consolidatedH.toFixed(1)}h`]);
+    });
+
+    const wsSummary = XLSX.utils.aoa_to_sheet(summaryRows);
+
+    // Sheet 2: Detalle de Registros
+    const detailRows = filtered.sort((a,b) => a.callDateTime - b.callDateTime).map((r, index) => {
+      const start = new Date(r.callDateTime);
+      const end = new Date(r.terminationDateTime);
+      const gross = r.grossHours !== undefined ? r.grossHours : r.totalHours;
+      const ded = r.deduction !== undefined ? r.deduction : 0;
+      const net = r.netHours !== undefined ? r.netHours : r.totalHours;
+
+      const breakdown = getDailyRuralBreakdown(r);
+      const breakdownStr = breakdown.map(item => `Día ${item.dayNum}: ${item.netHours.toFixed(1)}h`).join(', ');
+
+      return {
+        "No.": index + 1,
+        "Médico": r.doctorName,
+        "Fecha Llamado": start.toLocaleDateString(),
+        "Hora Llamado": start.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        "Llegada Hospital": r.hospitalArrivalTime || 'N/A',
+        "Fecha Egreso": end.toLocaleDateString(),
+        "Hora Egreso": end.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        "Horas Brutas": gross,
+        "Deducción (Solapamiento)": ded,
+        "Horas Efectivas (Netas)": net,
+        "Desglose Diario (Horas Efectivas)": breakdownStr || `${net.toFixed(1)}h`,
+        "Paciente": r.patientName || 'N/A',
+        "Cédula Paciente": r.patientId || 'N/A',
+        "Diagnóstico": r.diagnosis || 'N/A',
+        "Lugar Aceptación": r.acceptancePlace || 'N/A',
+        "Actividad": r.activity || 'N/A',
+        "Autorizado Por": r.calledBy || 'N/A',
+        "Estado": r.authorizedStatus === 'signed' ? 'AUTORIZADO Y FIRMADO' : 'PENDIENTE'
+      };
+    });
+
+    const wsDetail = XLSX.utils.json_to_sheet(detailRows);
+
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, wsSummary, "Resumen");
+    XLSX.utils.book_append_sheet(wb, wsDetail, "Detalle de Disponibilidades");
+
+    XLSX.writeFile(wb, `Consolidado_Disponibilidades_${MONTH_NAMES[selectedMonth]}_${selectedYear}.xlsx`);
+  };
+
+  const exportRuralConsolidatedPDF = () => {
+    const filtered = ruralAvailabilities.filter(r => r.targetMonth === selectedMonth && r.targetYear === selectedYear);
+    if (filtered.length === 0) return alert("No hay datos de disponibilidad para este mes.");
+
+    const doc = new jsPDF('l', 'pt', 'a4'); // Landscape A4
+
+    // Page 1: Beautiful Cover and Executive Summary
+    // Draw background/borders
+    doc.setDrawColor(241, 245, 249); // slate-100
+    doc.setLineWidth(2);
+    doc.rect(20, 20, 802, 555); // border
+
+    // Header with Logo
+    drawHospitalLogoVector(doc, 60, 50, 1.2);
+
+    // Title Block
+    doc.setTextColor(15, 81, 50); // ESE green
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(22);
+    doc.text("CONSOLIDADO MENSUAL DE DISPONIBILIDADES", 180, 80);
+    
+    doc.setTextColor(71, 85, 105); // slate-600
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(12);
+    doc.text("ESE Hospital Departamental San Antonio - Roldanillo, Valle", 180, 100);
+    doc.setFont("helvetica", "bold");
+    doc.text(`Periodo Reportado: ${MONTH_NAMES[selectedMonth].toUpperCase()} ${selectedYear}`, 180, 120);
+
+    // Let's compute stats
+    const activeRuralDocs = doctors.filter(d => d.cat === 'Rural' && d.st === 'activo');
+    const totalTurnero = activeRuralDocs.reduce((sum, doc) => sum + getDoctorTurneroHours(doc.id), 0);
+    const totalDispo = filtered.reduce((sum, r) => sum + (r.netHours !== undefined ? r.netHours : (r.totalHours || 0)), 0);
+    const totalConsolidado = totalTurnero + totalDispo;
+    const avgHours = filtered.length ? (totalDispo / filtered.length) : 0;
+
+    // Conteo por actividad
+    const activitiesCount: Record<string, number> = {};
+    filtered.forEach(r => {
+      const act = r.activity || 'Otro';
+      activitiesCount[act] = (activitiesCount[act] || 0) + 1;
+    });
+
+    // Draw Stats Columns
+    // Col 1: RESUMEN ESTADÍSTICO
+    doc.setFillColor(248, 250, 252); // slate-50
+    doc.rect(60, 160, 340, 360, 'F');
+    doc.setDrawColor(226, 232, 240); // slate-200
+    doc.rect(60, 160, 340, 360, 'S');
+
+    doc.setFillColor(15, 81, 50); // green banner
+    doc.rect(60, 160, 340, 35, 'F');
+    doc.setTextColor(255, 255, 255);
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(12);
+    doc.text("RESUMEN ESTADÍSTICO", 80, 182);
+
+    doc.setTextColor(15, 23, 42); // slate-950
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(10);
+    let yPos = 210;
+    
+    doc.text("Total de registros de disponibilidad:", 80, yPos);
+    doc.setFont("helvetica", "bold");
+    doc.text(`${filtered.length}`, 320, yPos);
+    doc.setFont("helvetica", "normal");
+    yPos += 20;
+
+    doc.text("Total horas de turnero programadas:", 80, yPos);
+    doc.setFont("helvetica", "bold");
+    doc.text(`${totalTurnero.toFixed(1)}h`, 320, yPos);
+    doc.setFont("helvetica", "normal");
+    yPos += 20;
+
+    doc.text("Total horas de disponibilidad efectivas:", 80, yPos);
+    doc.setFont("helvetica", "bold");
+    doc.setTextColor(16, 185, 129); // emerald-500
+    doc.text(`${totalDispo.toFixed(1)}h`, 320, yPos);
+    doc.setTextColor(15, 23, 42);
+    doc.setFont("helvetica", "normal");
+    yPos += 20;
+
+    doc.text("Consolidado total del mes (Rural):", 80, yPos);
+    doc.setFont("helvetica", "bold");
+    doc.text(`${totalConsolidado.toFixed(1)}h`, 320, yPos);
+    doc.setFont("helvetica", "normal");
+    yPos += 20;
+
+    doc.text("Promedio de horas por llamado:", 80, yPos);
+    doc.setFont("helvetica", "bold");
+    doc.text(`${avgHours.toFixed(1)}h`, 320, yPos);
+    doc.setFont("helvetica", "normal");
+    yPos += 30;
+
+    // List of rural doctors hours in this panel
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(10);
+    doc.text("Acumulado por Médico:", 80, yPos);
+    yPos += 18;
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(8.5);
+    activeRuralDocs.forEach(d => {
+      const turneroH = getDoctorTurneroHours(d.id);
+      const ruralH = filtered
+        .filter(r => r.doctorId === d.id)
+        .reduce((sum, r) => sum + (r.netHours !== undefined ? r.netHours : (r.totalHours || 0)), 0);
+      const consolidatedH = turneroH + ruralH;
+
+      doc.text(`${d.nombre}:`, 80, yPos);
+      doc.setFont("helvetica", "bold");
+      doc.text(`T: ${turneroH.toFixed(1)}h | R: ${ruralH.toFixed(1)}h | Total: ${consolidatedH.toFixed(1)}h`, 200, yPos);
+      doc.setFont("helvetica", "normal");
+      yPos += 18;
+    });
+
+
+    // Col 2: CONTEO POR ACTIVIDAD
+    doc.setFillColor(248, 250, 252); // slate-50
+    doc.rect(440, 160, 340, 360, 'F');
+    doc.setDrawColor(226, 232, 240); // slate-200
+    doc.rect(440, 160, 340, 360, 'S');
+
+    doc.setFillColor(15, 81, 50); // green banner
+    doc.rect(440, 160, 340, 35, 'F');
+    doc.setTextColor(255, 255, 255);
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(12);
+    doc.text("CONTEO POR ACTIVIDAD", 460, 182);
+
+    doc.setTextColor(15, 23, 42); // slate-950
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(10);
+    let yPosAct = 210;
+
+    const possibleActivities = [
+      "Traslado médico",
+      "Apoyo urgencias",
+      "Apoyo hospitalización",
+      "Apoyo observación",
+      "Apoyo al triage",
+      "Cubrir incapacidad",
+      "Ayudantía quirúrgica",
+      "Brigada",
+      "Consulta externa",
+      "Administrativo"
+    ];
+
+    possibleActivities.forEach(act => {
+      const count = activitiesCount[act] || 0;
+      doc.text(act, 460, yPosAct);
+      doc.setFont("helvetica", "bold");
+      doc.text(`${count}`, 720, yPosAct);
+      doc.setFont("helvetica", "normal");
+      yPosAct += 20;
+    });
+
+    const otherCount = Object.keys(activitiesCount)
+      .filter(k => !possibleActivities.includes(k))
+      .reduce((sum, k) => sum + activitiesCount[k], 0);
+    if (otherCount > 0) {
+      doc.text("Otros", 460, yPosAct);
+      doc.setFont("helvetica", "bold");
+      doc.text(`${otherCount}`, 720, yPosAct);
+      doc.setFont("helvetica", "normal");
+    }
+
+    doc.setFontSize(8);
+    doc.setTextColor(148, 163, 184); // slate-400
+    doc.text("Documento oficial generado por el Sistema de Gestión ESE Hospital Departamental San Antonio - Roldanillo.", 421, 560, { align: "center" });
+
+    // Page 2: Detailed Table of Availabilities
+    doc.addPage();
+    
+    // Draw running header
+    doc.setFillColor(15, 81, 50);
+    doc.rect(0, 0, 842, 50, 'F');
+    doc.setTextColor(255, 255, 255);
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(14);
+    doc.text("DETALLE DE REPORTES DE DISPONIBILIDAD RURAL", 40, 30);
+    doc.setFontSize(9);
+    doc.setFont("helvetica", "normal");
+    doc.text(`ESE Hospital Departamental San Antonio - Roldanillo | Periodo: ${MONTH_NAMES[selectedMonth]} ${selectedYear}`, 40, 42);
+
+    drawHospitalLogoVector(doc, 750, 5, 0.4);
+
+    const tableColumn = ["No.", "Fecha", "Médico", "Ingreso / Egreso", "Horas Netas", "Paciente (ID)", "Diagnóstico / Destino", "Actividad", "Autorización / Firma"];
+    const tableRows = filtered.sort((a,b) => a.callDateTime - b.callDateTime).map((r, idx) => {
+      const start = new Date(r.callDateTime);
+      const end = new Date(r.terminationDateTime);
+      const net = r.netHours !== undefined ? r.netHours : r.totalHours;
+      const hoursStr = `${net.toFixed(1)}h`;
+
+      const rangeStr = `${start.toLocaleDateString()} ${start.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}\n${end.toLocaleDateString()} ${end.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
+      const patientStr = `${r.patientName || 'N/A'}\nID: ${r.patientId || 'N/A'}`;
+      const diagStr = `Diag: ${r.diagnosis || 'N/A'}\nDest: ${r.acceptancePlace || 'N/A'}`;
+      const authStr = `${r.calledBy || 'N/A'}\n(${r.authorizedStatus === 'signed' ? 'FIRMADO' : 'PENDIENTE'})`;
+
+      return [
+        idx + 1,
+        start.toLocaleDateString(),
+        r.doctorName,
+        rangeStr,
+        hoursStr,
+        patientStr,
+        diagStr,
+        r.activity || 'N/A',
+        authStr
+      ];
+    });
+
+    (doc as any).autoTable({
+      head: [tableColumn],
+      body: tableRows,
+      startY: 70,
+      theme: 'grid',
+      styles: { fontSize: 7, cellPadding: 4 },
+      headStyles: { fillColor: [15, 81, 50], textColor: 255, fontSize: 8, fontStyle: 'bold' },
+      columnStyles: {
+        0: { cellWidth: 20 },
+        1: { cellWidth: 50 },
+        2: { cellWidth: 90 },
+        3: { cellWidth: 100 },
+        4: { cellWidth: 50, fontStyle: 'bold', textColor: [15, 81, 50] },
+        5: { cellWidth: 110 },
+        6: { cellWidth: 150 },
+        7: { cellWidth: 110 },
+        8: { cellWidth: 90 }
+      },
+      margin: { left: 40, right: 40 }
+    });
+
+    doc.save(`Consolidado_Disponibilidades_${MONTH_NAMES[selectedMonth]}_${selectedYear}.pdf`);
+  };
+
+  const computeAvailabilityHash = (r: RuralAvailability): string => {
+    const content = `${r.id}|${r.doctorId}|${r.patientId || ''}|${r.totalHours}|${r.authorizedTimestamp || ''}`;
+    let hash1 = 0;
+    for (let i = 0; i < content.length; i++) {
+      const char = content.charCodeAt(i);
+      hash1 = ((hash1 << 5) - hash1) + char;
+      hash1 |= 0;
+    }
+    const p1 = Math.abs(hash1).toString(16).toUpperCase().padStart(8, '0');
+    
+    let hash2 = 17;
+    for (let i = content.length - 1; i >= 0; i--) {
+      const char = content.charCodeAt(i);
+      hash2 = ((hash2 << 5) - hash2) + char;
+      hash2 |= 0;
+    }
+    const p2 = Math.abs(hash2).toString(16).toUpperCase().padStart(8, '0');
+    
+    return `HDSAR-RURAL-${p1}-${p2}`;
+  };
+
+  const exportRuralAvailabilityPDF = (r: RuralAvailability) => {
+    const doc = new jsPDF('p', 'pt', 'a4');
+    const hash = computeAvailabilityHash(r);
+    
+    // Header Banner
+    doc.setFillColor(15, 81, 50); // ESE San Antonio Green
+    doc.rect(0, 0, 595, 80, 'F');
+    
+    doc.setTextColor(255, 255, 255);
+    doc.setFontSize(18);
+    doc.setFont("helvetica", "bold");
+    doc.text("REPORTE DE DISPONIBILIDAD RURAL", 40, 42);
+    
+    doc.setFontSize(10);
+    doc.setFont("helvetica", "normal");
+    doc.text("SISTEMA DE GESTIÓN HDSAR • CONTROL DE DISPONIBILIDADES", 40, 60);
+
+    // Draw Vector Logo on Header Banner
+    drawHospitalLogoVector(doc, 480, 5, 0.5);
+    
+    let currentY = 110;
+    
+    // Document metadata
+    doc.setTextColor(100, 116, 139); // Slate-500
+    doc.setFontSize(10);
+    doc.text(`ID Reporte: ${r.id}`, 400, currentY);
+    doc.text(`Fecha Reporte: ${new Date(r.timestamp).toLocaleDateString()}`, 400, currentY + 15);
+    
+    currentY += 40;
+    
+    // Section 1: Information
+    doc.setTextColor(15, 23, 42); // Slate-900
+    doc.setFontSize(12);
+    doc.setFont("helvetica", "bold");
+    doc.text("Información del Médico y Llamado", 40, currentY);
+    
+    // Draw line
+    doc.setDrawColor(226, 232, 240); // Slate-200
+    doc.line(40, currentY + 8, 555, currentY + 8);
+    
+    currentY += 28;
+    doc.setFontSize(10);
+    doc.setFont("helvetica", "normal");
+    
+    doc.text(`Médico Rural:`, 40, currentY);
+    doc.setFont("helvetica", "bold");
+    doc.text(`${r.doctorName}`, 160, currentY);
+    doc.setFont("helvetica", "normal");
+    currentY += 20;
+    
+    doc.text(`Fecha Llamado:`, 40, currentY);
+    doc.text(`${new Date(r.callDateTime).toLocaleDateString()} ${new Date(r.callDateTime).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}`, 160, currentY);
+    currentY += 20;
+    
+    doc.text(`Llegada Hospital:`, 40, currentY);
+    doc.text(`${r.hospitalArrivalTime || 'N/A'}`, 160, currentY);
+    currentY += 20;
+    
+    doc.text(`Fecha Término:`, 40, currentY);
+    doc.text(`${new Date(r.terminationDateTime).toLocaleDateString()} ${new Date(r.terminationDateTime).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}`, 160, currentY);
+    currentY += 20;
+    
+    doc.text(`Horas Totales:`, 40, currentY);
+    doc.setFont("helvetica", "bold");
+    doc.text(`${(r.grossHours !== undefined ? r.grossHours : r.totalHours).toFixed(1)}h Brutas | ${(r.deduction !== undefined ? r.deduction : 0).toFixed(1)}h Deducción | ${(r.netHours !== undefined ? r.netHours : r.totalHours).toFixed(1)}h Efectivas`, 160, currentY);
+    doc.setFont("helvetica", "normal");
+    
+    currentY += 35;
+    
+    // Section 2: Details
+    doc.setFontSize(12);
+    doc.setFont("helvetica", "bold");
+    doc.text("Detalles de la Actividad y Paciente", 40, currentY);
+    doc.line(40, currentY + 8, 555, currentY + 8);
+    
+    currentY += 28;
+    doc.setFontSize(10);
+    doc.setFont("helvetica", "normal");
+    
+    doc.text(`Paciente:`, 40, currentY);
+    doc.text(`${r.patientName} (ID: ${r.patientId || 'N/A'})`, 160, currentY);
+    currentY += 20;
+    
+    doc.text(`Diagnóstico:`, 40, currentY);
+    doc.text(`${r.diagnosis || 'No especificado'}`, 160, currentY);
+    currentY += 20;
+    
+    doc.text(`Destino:`, 40, currentY);
+    doc.text(`${r.acceptancePlace || 'Sin destino'}`, 160, currentY);
+    currentY += 20;
+    
+    doc.text(`Actividad:`, 40, currentY);
+    doc.setFont("helvetica", "oblique");
+    doc.text(`${r.activity}`, 160, currentY);
+    doc.setFont("helvetica", "normal");
+    
+    currentY += 35;
+
+    // Section 3: Daily breakdown table
+    const breakdown = getDailyRuralBreakdown(r);
+    if (breakdown.length > 0) {
+      doc.setFontSize(12);
+      doc.setFont("helvetica", "bold");
+      doc.text("Desglose Diario de Horas Efectivas", 40, currentY);
+      doc.line(40, currentY + 8, 555, currentY + 8);
+      
+      currentY += 15;
+      
+      const breakdownColumns = ["Fecha", "Día del Mes", "Horas Brutas", "Deducciones", "Horas Efectivas"];
+      const breakdownRows = breakdown.map(item => [
+        item.dayString,
+        `Día ${item.dayNum}`,
+        `${item.grossHours.toFixed(1)}h`,
+        item.deduction > 0 ? `-${item.deduction.toFixed(1)}h` : "0.0h",
+        `${item.netHours.toFixed(1)}h`
+      ]);
+
+      (doc as any).autoTable({
+        head: [breakdownColumns],
+        body: breakdownRows,
+        startY: currentY,
+        theme: 'grid',
+        styles: { fontSize: 8, cellPadding: 4 },
+        headStyles: { fillColor: [15, 81, 50], textColor: 255, fontSize: 8, fontStyle: 'bold' },
+        columnStyles: {
+          4: { fontStyle: 'bold', textColor: [15, 81, 50] }
+        },
+        margin: { left: 40, right: 40 }
+      });
+      
+      currentY = (doc as any).lastAutoTable.finalY + 30;
+    } else {
+      currentY += 10;
+    }
+    
+    // Section 4: Signature & Authorization
+    doc.setFontSize(12);
+    doc.setFont("helvetica", "bold");
+    doc.text("Autorización y Firma Digital", 40, currentY);
+    doc.line(40, currentY + 8, 555, currentY + 8);
+    
+    currentY += 28;
+    doc.setFontSize(10);
+    doc.text(`Estado:`, 40, currentY);
+    doc.setFont("helvetica", "bold");
+    if (r.authorizedStatus === 'signed') {
+      doc.setTextColor(16, 185, 129); // Emerald-500
+      doc.text("AUTORIZADO Y FIRMADO", 160, currentY);
+    } else {
+      doc.setTextColor(245, 158, 11); // Amber-500
+      doc.text("PENDIENTE DE FIRMA", 160, currentY);
+    }
+    doc.setTextColor(15, 23, 42); // Reset to Slate-900
+    doc.setFont("helvetica", "normal");
+    
+    currentY += 20;
+    doc.text(`Autorizador:`, 40, currentY);
+    doc.text(`${r.calledBy}`, 160, currentY);
+    
+    if (r.authorizedTimestamp) {
+      currentY += 20;
+      doc.text(`Fecha Firma:`, 40, currentY);
+      doc.text(`${new Date(r.authorizedTimestamp).toLocaleString()}`, 160, currentY);
+    }
+    
+    // Draw Signature Image if exists
+    if (r.authorizerSignature) {
+      try {
+        currentY += 30;
+        doc.text("Firma Digital del Autorizador:", 40, currentY);
+        doc.addImage(r.authorizerSignature, 'PNG', 40, currentY + 15, 160, 60);
+      } catch (err) {
+        console.error("Error drawing signature in PDF:", err);
+      }
+    }
+    
+    // Footer Section (Timestamp and Hash)
+    doc.setFillColor(248, 250, 252); // Slate-50
+    doc.rect(40, 740, 515, 50, 'F');
+    doc.setDrawColor(203, 213, 225); // Slate-300
+    doc.rect(40, 740, 515, 50, 'S');
+    
+    doc.setFontSize(8);
+    doc.setTextColor(100, 116, 139); // Slate-500
+    doc.setFont("helvetica", "bold");
+    doc.text(`CÓDIGO DE INTEGRIDAD (HASH) DE SEGURIDAD:`, 50, 755);
+    doc.setFont("courier", "bold");
+    doc.setTextColor(15, 23, 42);
+    doc.text(`${hash}`, 50, 768);
+    
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(7);
+    doc.setTextColor(148, 163, 184); // Slate-400
+    doc.text(`Generado por Sistema HDSAR el ${new Date().toLocaleString()} • Este documento es una representación autorizada digitalmente de la disponibilidad rural.`, 50, 782);
+    
+    doc.save(`Reporte_Disponibilidad_Rural_${r.id}.pdf`);
+  };
+
+  const saveEmergencyConfig = async (config: { rojoRoles: string[], azulRoles: string[] }) => {
+    try {
+      await setDoc(doc(db, 'settings', 'emergency_notifications'), config);
+      setNotification({ message: "Configuración de notificaciones de emergencia guardada", type: 'success' });
+    } catch (err) {
+      handleFirestoreError(err, OperationType.WRITE, 'settings/emergency_notifications');
+    }
+  };
+
+  const saveCensusNotificationConfig = async (config: typeof censusNotificationConfig) => {
+    try {
+      await setDoc(doc(db, 'settings', 'census_notification'), config);
+      setNotification({ message: "Configuración de recordatorio de censo guardada con éxito", type: 'success' });
+    } catch (err) {
+      handleFirestoreError(err, OperationType.WRITE, 'settings/census_notification');
+    }
+  };
+
+  // Background trigger for Daily Census Reminder Notifications
+  useEffect(() => {
+    if (!fbUser || !censusNotificationConfig.enabled) return;
+
+    const interval = setInterval(async () => {
+      const now = new Date();
+      const currentHourMin = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`;
+      const todayString = `${now.getFullYear()}-${(now.getMonth() + 1).toString().padStart(2, '0')}-${now.getDate().toString().padStart(2, '0')}`;
+
+      // Check if current time matches the configured trigger time and hasn't been triggered today
+      if (currentHourMin === censusNotificationConfig.time && censusNotificationConfig.lastTriggeredDay !== todayString) {
+        console.log("Triggering daily census notification...");
+        
+        // 1. Immediately update lastTriggeredDay locally and in DB to prevent multiple triggers
+        try {
+          await setDoc(doc(db, 'settings', 'census_notification'), {
+            ...censusNotificationConfig,
+            lastTriggeredDay: todayString
+          }, { merge: true });
+          
+          // 2. Add notifications for all active doctors
+          const activeDocs = doctors.filter(d => d.st === 'activo');
+          
+          for (const docObj of activeDocs) {
+            await pushNotification(docObj.id, censusNotificationConfig.message);
+          }
+          
+          console.log(`Pushed daily census notification to ${activeDocs.length} doctors.`);
+        } catch (err) {
+          console.error("Error pushing census notifications:", err);
+        }
+      }
+    }, 15000); // Check every 15 seconds
+
+    return () => clearInterval(interval);
+  }, [fbUser, censusNotificationConfig, doctors]);
+
+  const getDailyRuralBreakdown = (r: RuralAvailability) => {
+    const start = new Date(r.callDateTime);
+    const end = new Date(r.terminationDateTime);
+    if (isNaN(start.getTime()) || isNaN(end.getTime()) || end <= start) {
+      return [];
+    }
+
+    const breakdown: { dayString: string, dayNum: number, grossHours: number, deduction: number, netHours: number }[] = [];
+    
+    // Iterate from the start date to the end date day-by-day
+    let current = new Date(start.getFullYear(), start.getMonth(), start.getDate());
+    const lastDay = new Date(end.getFullYear(), end.getMonth(), end.getDate());
+
+    const docShifts = currentMonthData[r.doctorId];
+
+    while (current <= lastDay) {
+      const dayNum = current.getDate();
+      
+      // Calculate start and end for this specific day
+      const dayStart = new Date(current);
+      dayStart.setHours(0, 0, 0, 0);
+      const chunkStart = Math.max(start.getTime(), dayStart.getTime());
+
+      const dayEnd = new Date(current);
+      dayEnd.setHours(24, 0, 0, 0); // 00:00 next day
+      const chunkEnd = Math.min(end.getTime(), dayEnd.getTime());
+
+      if (chunkStart < chunkEnd) {
+        const gross = (chunkEnd - chunkStart) / (1000 * 60 * 60);
+        let ded = 0;
+
+        // Calculate overlap for this day
+        if (docShifts) {
+          (['m', 't', 'n'] as const).forEach(slot => {
+            const sigla = docShifts[slot]?.[dayNum];
+            if (sigla && sigla !== 'X' && sigla !== 'L' && sigla !== '') {
+              // Get interval for this slot
+              const sTime = new Date(current);
+              const eTime = new Date(current);
+              if (slot === 'm') { sTime.setHours(6, 0, 0, 0); eTime.setHours(12, 0, 0, 0); }
+              else if (slot === 't') { sTime.setHours(12, 0, 0, 0); eTime.setHours(18, 0, 0, 0); }
+              else if (slot === 'n') { sTime.setHours(18, 0, 0, 0); eTime.setHours(24, 0, 0, 0); }
+
+              const intersectS = Math.max(chunkStart, sTime.getTime());
+              const intersectE = Math.min(chunkEnd, eTime.getTime());
+
+              if (intersectS < intersectE) {
+                ded += (intersectE - intersectS) / (1000 * 60 * 60);
+              }
+            }
+          });
+        }
+
+        const net = Math.max(0, gross - ded);
+        
+        breakdown.push({
+          dayString: current.toLocaleDateString(),
+          dayNum,
+          grossHours: gross,
+          deduction: ded,
+          netHours: net
+        });
+      }
+
+      // Move to next day
+      current.setDate(current.getDate() + 1);
+    }
+
+    return breakdown;
   };
 
   const generateAIStatsReport = async () => {
@@ -3504,13 +4611,65 @@ Usa un tono directivo, formal y conciso en español. Solo usa negritas y viñeta
   const filteredRolesList = roles.filter(r => r.toLowerCase().includes(roleSearch.toLowerCase()));
 
   return (
-    <div className={`bg-stone-50 min-h-screen text-slate-800 flex flex-col font-sans transition-all duration-500`} style={{ '--primary': theme.primary } as any}>
+    <div className={`bg-stone-50 min-h-screen text-slate-800 flex flex-col font-sans transition-all duration-500 ${themeMode === 'dark' ? 'dark-theme dark' : ''}`} style={{ '--primary': theme.primary } as any}>
       <style>{`
         :root { 
           --primary: ${theme.primary}; 
           --primary-soft: ${theme.primary}15;
           --primary-mid: ${theme.primary}66;
         }
+        /* Elegant Dark Theme Overrides for night medical shifts */
+        .dark-theme {
+          background-color: #0b0f19 !important; /* slate-950/900 mix */
+          color: #f1f5f9 !important;
+        }
+        .dark-theme header, 
+        .dark-theme .bg-white,
+        .dark-theme .bg-white\\/95 {
+          background-color: #0f172a !important; /* slate-900 */
+          color: #f1f5f9 !important;
+          border-color: #1e293b !important;
+        }
+        .dark-theme .text-slate-800, 
+        .dark-theme .text-slate-700, 
+        .dark-theme .text-slate-900, 
+        .dark-theme .text-stone-700,
+        .dark-theme .text-slate-600 {
+          color: #f1f5f9 !important;
+        }
+        .dark-theme .text-slate-500,
+        .dark-theme .text-stone-500 {
+          color: #94a3b8 !important;
+        }
+        .dark-theme .border-slate-100,
+        .dark-theme .border-slate-200,
+        .dark-theme .border-stone-100,
+        .dark-theme .border-stone-200,
+        .dark-theme .border-emerald-100 {
+          border-color: #1e293b !important;
+        }
+        .dark-theme .bg-stone-50,
+        .dark-theme .bg-stone-100,
+        .dark-theme .bg-slate-50,
+        .dark-theme .bg-slate-100 {
+          background-color: #1e293b !important;
+          color: #f1f5f9 !important;
+        }
+        .dark-theme select,
+        .dark-theme input {
+          background-color: #1e293b !important;
+          color: #ffffff !important;
+          border-color: #334155 !important;
+        }
+        .dark-theme .shadow-xl,
+        .dark-theme .shadow-md,
+        .dark-theme .shadow-sm {
+          box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.5), 0 2px 4px -1px rgba(0, 0, 0, 0.5) !important;
+        }
+        .dark-theme .text-slate-400 {
+          color: #64748b !important;
+        }
+
         .bg-primary { background-color: var(--primary); }
         .text-primary { color: var(--primary); }
         .border-primary { border-color: var(--primary); }
@@ -3654,6 +4813,27 @@ Usa un tono directivo, formal y conciso en español. Solo usa negritas y viñeta
              )}
           </div>
           <div className="flex items-center gap-3">
+            <button
+              onClick={() => {
+                const newMode = themeMode === 'light' ? 'dark' : 'light';
+                setThemeMode(newMode);
+                localStorage.setItem('themeMode', newMode);
+              }}
+              className="flex items-center gap-2 bg-slate-100 hover:bg-slate-200 text-slate-700 px-3 py-1.5 rounded-xl text-xs font-black transition-all border border-slate-200 no-print"
+              title="Alternar Tema Claro/Oscuro"
+            >
+              {themeMode === 'light' ? (
+                <>
+                  <Moon className="w-4 h-4 text-indigo-600" />
+                  <span className="hidden md:inline uppercase">Modo Oscuro</span>
+                </>
+              ) : (
+                <>
+                  <Sun className="w-4 h-4 text-amber-500" />
+                  <span className="hidden md:inline uppercase">Modo Claro</span>
+                </>
+              )}
+            </button>
             <a 
               href="https://wa.me/573173683886?mode=gi_t" 
               target="_blank" 
@@ -3678,11 +4858,12 @@ Usa un tono directivo, formal y conciso en español. Solo usa negritas y viñeta
             {[
               { id: 'home', label: 'Dashboard', icon: ChevronRight },
               { id: 'turnos', label: 'Turnero Hospitalario', icon: Calendar },
+              { id: 'calendario-test', label: 'Mi Calendario', icon: Calendar },
               { id: 'census', label: 'Censo Hospitalario', icon: ClipboardList },
+              { id: 'rural', label: 'Disponibilidades Rurales', icon: MapPin },
               { id: 'committee', label: 'Comité H.C.', icon: FileCheck },
               { id: 'pic', label: 'Capacitaciones (PIC)', icon: BrainCircuit },
               { id: 'solicitudes', label: 'Solicitudes', icon: Send },
-              { id: 'rural', label: 'Disponibilidades Rurales', icon: MapPin },
               ...((session.r === 'admin' || session.r === 'root') ? [
                 { id: 'stats', label: 'Estadísticas', icon: BarChart3 }
               ] : []),
@@ -4616,11 +5797,25 @@ Usa un tono directivo, formal y conciso en español. Solo usa negritas y viñeta
 
                       return (['m', 't', 'n'] as SlotType[]).map((slot, sIdx) => (
                         <tr key={`${med.id}-${slot}`} className={`group hover:bg-slate-50 transition-colors ${sIdx === 2 ? 'border-b-4 border-slate-200' : ''}`}>
-                          {sIdx === 0 && (
-                            <td rowSpan={3} className="sticky left-0 bg-white z-20 text-left px-2 md:px-4 border-r-2 border-sky-500 border-b border-slate-200 shadow-xl group-hover:bg-slate-50 max-w-[100px] md:max-w-none">
-                              <div className="font-medium text-slate-800 text-[9px] md:text-xs truncate" title={displayName}>{displayName}</div>
-                            </td>
-                          )}
+                          {sIdx === 0 && (() => {
+                            const exceedsWeeklyLimit = weeklyAcc.some(wv => wv > 66);
+                            return (
+                              <td rowSpan={3} className={`sticky left-0 z-20 text-left px-2 md:px-4 border-r-2 border-sky-500 border-b border-slate-200 shadow-xl max-w-[100px] md:max-w-none transition-colors ${
+                                exceedsWeeklyLimit 
+                                  ? 'bg-rose-50/95 group-hover:bg-rose-100/95 border-l-4 border-l-rose-500' 
+                                  : 'bg-white group-hover:bg-slate-50'
+                              }`}>
+                                <div className="flex items-center justify-between gap-1">
+                                  <div className={`font-semibold text-[9px] md:text-xs truncate ${exceedsWeeklyLimit ? 'text-rose-700 font-black' : 'text-slate-800'}`} title={displayName}>{displayName}</div>
+                                  {exceedsWeeklyLimit && (
+                                    <span className="bg-rose-600 text-white text-[8px] font-black px-1 rounded animate-pulse shrink-0" title="¡Supera límite legal de 66h semanales!">
+                                      LÍMITE 66h
+                                    </span>
+                                  )}
+                                </div>
+                              </td>
+                            );
+                          })()}
                           <td className="sticky left-[100px] md:left-[140px] z-20 slot-label bg-slate-50 text-slate-600 font-bold text-[10px] py-1 border-r border-slate-200 shadow-[2px_0_5px_rgba(0,0,0,0.02)]">
                             <div style={{ writingMode: 'vertical-lr', transform: 'rotate(180deg)' }} className="mx-auto flex justify-center uppercase tracking-widest leading-none h-[40px] items-center">
                               {slot.toUpperCase()}
@@ -4824,6 +6019,302 @@ Usa un tono directivo, formal y conciso en español. Solo usa negritas y viñeta
                   ))}
                 </div>
               )}
+            </motion.div>
+          )}
+
+           {activeTab === 'calendario-test' && (
+            <motion.div 
+              key="calendario-test"
+              initial={{ opacity: 0, y: 15 }} 
+              animate={{ opacity: 1, y: 0 }}
+              className="space-y-6"
+            >
+              {/* Header Card */}
+              <div className="bg-white p-6 rounded-[32px] border border-slate-200 shadow-sm flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+                <div>
+                  <h2 className="text-2xl font-black text-slate-800 flex items-center gap-2">
+                     <Calendar className="w-6 h-6 text-emerald-600" /> Calendario Mensual Personalizado
+                  </h2>
+                  <p className="text-xs text-stone-500 font-mono italic">Visualización interactiva de turnos y disponibilidades por médico</p>
+                </div>
+
+                {/* Doctor Selector */}
+                <div className="w-full md:w-auto flex flex-col sm:flex-row gap-3">
+                  <div className="flex-1 sm:w-64">
+                    <label className="text-[10px] uppercase text-emerald-600 font-black block mb-1">Seleccionar Médico</label>
+                    <select
+                      value={selectedCalendarDocId || ''}
+                      onChange={(e) => setSelectedCalendarDocId(e.target.value ? parseInt(e.target.value) : null)}
+                      disabled={session?.r !== 'admin' && session?.r !== 'root'}
+                      className="w-full bg-slate-50 border border-slate-200 p-2.5 rounded-xl text-xs font-bold text-slate-800 outline-none focus:border-emerald-500 disabled:opacity-75 disabled:cursor-not-allowed"
+                    >
+                      <option value="">-- Seleccionar Médico --</option>
+                      {doctors
+                        .filter(d => d.st === 'activo')
+                        .sort((a,b) => a.nombre.localeCompare(b.nombre))
+                        .map(d => (
+                          <option key={d.id} value={d.id}>
+                            {d.nombre} {d.apellidos || ''} ({d.cat})
+                          </option>
+                        ))}
+                    </select>
+                  </div>
+                  
+                  {/* Month Selector matching turnero */}
+                  <div className="flex gap-2">
+                    <div>
+                      <label className="text-[10px] uppercase text-sky-600 font-black block mb-1">Mes</label>
+                      <select 
+                        value={selectedMonth}
+                        onChange={(e) => setSelectedMonth(parseInt(e.target.value))}
+                        className="bg-slate-50 border border-slate-200 p-2.5 rounded-xl text-xs font-bold text-slate-800 outline-none focus:border-sky-500"
+                      >
+                        {MONTH_NAMES.map((m, i) => <option key={i} value={i}>{m}</option>)}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="text-[10px] uppercase text-sky-600 font-black block mb-1">Año</label>
+                      <select 
+                        value={selectedYear}
+                        onChange={(e) => setSelectedYear(parseInt(e.target.value))}
+                        className="bg-slate-50 border border-slate-200 p-2.5 rounded-xl text-xs font-bold text-slate-800 outline-none focus:border-sky-500"
+                      >
+                        {Array.from({ length: 5 }, (_, i) => 2026 + i).map(y => <option key={y} value={y}>{y}</option>)}
+                      </select>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Personal Statistics Dashboard */}
+              {(() => {
+                const targetDocId = selectedCalendarDocId || session?.doctorId;
+                const activeDoc = doctors.find(d => d.id === targetDocId);
+                if (!activeDoc) {
+                  return (
+                    <div className="bg-amber-50 border border-amber-200 p-8 rounded-3xl text-center text-amber-800">
+                      Por favor, seleccione un médico válido o inicie sesión para ver el calendario de turnos.
+                    </div>
+                  );
+                }
+
+                // Calculate current month hours & shift stats
+                let totalShifts = 0;
+                let totalHours = 0;
+                const slotCounts = { m: 0, t: 0, n: 0 };
+                
+                for (let d = 1; d <= daysInMonth; d++) {
+                  (['m', 't', 'n'] as SlotType[]).forEach(slot => {
+                    const sigla = currentMonthData[activeDoc.id]?.[slot]?.[d] || 'X';
+                    if (sigla !== 'X') {
+                      totalShifts++;
+                      totalHours += getVarHours(slot, sigla);
+                      slotCounts[slot]++;
+                    }
+                  });
+                }
+
+                // Filter rural availability reports for this doctor
+                const personalRurals = ruralAvailabilities.filter(
+                  r => r.doctorId === activeDoc.id && r.targetMonth === selectedMonth && r.targetYear === selectedYear
+                );
+                const totalRuralNet = personalRurals.reduce((sum, r) => sum + (r.netHours !== undefined ? r.netHours : r.totalHours), 0);
+
+                // Build calendar calendar grid cells
+                const firstDayOfWeek = new Date(selectedYear, selectedMonth, 1).getDay(); // 0 is Sunday
+                const daysCells: (number | null)[] = [];
+                
+                // Backfill blanks for previous month padding
+                for (let i = 0; i < firstDayOfWeek; i++) {
+                  daysCells.push(null);
+                }
+                
+                // Add actual month days
+                for (let d = 1; d <= daysInMonth; d++) {
+                  daysCells.push(d);
+                }
+
+                return (
+                  <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
+                    {/* Left Column: Stats & Info Cards */}
+                    <div className="space-y-6 lg:col-span-1">
+                      {/* Doctor Profile Banner */}
+                      <div className="bg-gradient-to-br from-emerald-700 to-emerald-900 text-white p-6 rounded-[32px] shadow-lg relative overflow-hidden">
+                        <div className="absolute -right-6 -bottom-6 opacity-10">
+                          <StethoscopeIcon className="w-36 h-36" />
+                        </div>
+                        <span className="bg-white/20 text-white text-[9px] font-black uppercase px-2.5 py-1 rounded-full">
+                          {activeDoc.cat}
+                        </span>
+                        <h3 className="text-xl font-black mt-3 leading-tight">{activeDoc.nombre}</h3>
+                        <p className="text-xs text-emerald-100 mt-1 font-medium">{activeDoc.rol || 'Médico General'}</p>
+                        
+                        <div className="border-t border-white/20 mt-4 pt-4 flex justify-between text-xs text-emerald-200">
+                          <span>Estado:</span>
+                          <span className="font-bold uppercase text-white">● Activo</span>
+                        </div>
+                      </div>
+
+                      {/* Cumulative Hours Summary */}
+                      <div className="bg-white p-6 rounded-[32px] border border-slate-200 shadow-sm space-y-4">
+                        <h4 className="text-xs uppercase text-slate-400 font-bold tracking-wider">Consolidado Mensual</h4>
+                        
+                        <div className="space-y-3">
+                          <div className="bg-emerald-50/50 p-4 rounded-2xl border border-emerald-100">
+                            <span className="text-[10px] text-emerald-700 font-black uppercase">Turnero Programado</span>
+                            <div className="text-2xl font-black text-emerald-800">{totalHours.toFixed(1)}h</div>
+                            <div className="text-[10px] text-slate-500 mt-0.5">{totalShifts} Guardias reportadas</div>
+                          </div>
+
+                          <div className="bg-sky-50/50 p-4 rounded-2xl border border-sky-100">
+                            <span className="text-[10px] text-sky-700 font-black uppercase">Disponibilidad Rural</span>
+                            <div className="text-2xl font-black text-sky-800">{totalRuralNet.toFixed(1)}h</div>
+                            <div className="text-[10px] text-slate-500 mt-0.5">{personalRurals.length} Llamados efectivos</div>
+                          </div>
+
+                          <div className="bg-stone-50 p-4 rounded-2xl border border-slate-200">
+                            <span className="text-[10px] text-slate-500 font-black uppercase">Total Consolidado</span>
+                            <div className="text-3xl font-black text-slate-800">{(totalHours + totalRuralNet).toFixed(1)}h</div>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Shift distribution info */}
+                      <div className="bg-white p-6 rounded-[32px] border border-slate-200 shadow-sm">
+                        <h4 className="text-xs uppercase text-slate-400 font-bold mb-4 tracking-wider">Distribución por Jornada</h4>
+                        <div className="space-y-2 text-xs font-semibold text-slate-700">
+                          <div className="flex justify-between items-center py-1 border-b border-slate-100">
+                            <span className="flex items-center gap-2"><span className="w-2.5 h-2.5 bg-green-500 rounded-full"></span> Mañanas (M)</span>
+                            <span className="font-mono font-bold text-slate-900">{slotCounts.m} turnos</span>
+                          </div>
+                          <div className="flex justify-between items-center py-1 border-b border-slate-100">
+                            <span className="flex items-center gap-2"><span className="w-2.5 h-2.5 bg-blue-500 rounded-full"></span> Tardes (T)</span>
+                            <span className="font-mono font-bold text-slate-900">{slotCounts.t} turnos</span>
+                          </div>
+                          <div className="flex justify-between items-center py-1">
+                            <span className="flex items-center gap-2"><span className="w-2.5 h-2.5 bg-purple-500 rounded-full"></span> Noches (N)</span>
+                            <span className="font-mono font-bold text-slate-900">{slotCounts.n} turnos</span>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Right Column: 7-Column Calendar Grid */}
+                    <div className="lg:col-span-3 bg-white p-6 md:p-8 rounded-[40px] border border-slate-200 shadow-sm flex flex-col justify-between">
+                      <div>
+                        {/* Calendar Header Row */}
+                        <div className="flex justify-between items-center mb-6">
+                          <h3 className="text-lg font-black text-slate-800 uppercase">
+                            Agenda para {MONTH_NAMES[selectedMonth]} {selectedYear}
+                          </h3>
+                          <div className="flex gap-2 text-[10px] font-mono">
+                            <span className="px-2 py-1 bg-rose-50 border border-rose-200 text-rose-700 rounded-md font-bold">Domingos/Festivos</span>
+                            <span className="px-2 py-1 bg-amber-50 border border-amber-200 text-amber-700 rounded-md font-bold">Rurales</span>
+                          </div>
+                        </div>
+
+                        {/* 7 Columns Days Labels */}
+                        <div className="grid grid-cols-7 gap-1.5 md:gap-3 text-center mb-3">
+                          {['DOM', 'LUN', 'MAR', 'MIÉ', 'JUE', 'VIE', 'SÁB'].map((lbl, idx) => (
+                            <div key={idx} className={`text-[10px] font-black uppercase py-2 tracking-widest ${idx === 0 ? 'text-rose-500' : 'text-slate-400'}`}>
+                              {lbl}
+                            </div>
+                          ))}
+                        </div>
+
+                        {/* Calendar Day Cells Grid */}
+                        <div className="grid grid-cols-7 gap-1.5 md:gap-3">
+                          {daysCells.map((day, cellIdx) => {
+                            if (day === null) {
+                              return <div key={`empty-${cellIdx}`} className="bg-slate-50/40 rounded-2xl min-h-[90px] border border-dashed border-slate-100"></div>;
+                            }
+
+                            const d = day;
+                            const dow = new Date(selectedYear, selectedMonth, d).getDay();
+                            const timestamp = selectedYear * 10000 + (selectedMonth + 1) * 100 + d;
+                            const isHolidayOrSunday = dow === 0 || currentHolidays.has(timestamp);
+
+                            // Fetch scheduled shifts for this doctor on this day
+                            const scheduledShifts: { slot: SlotType, sigla: string }[] = [];
+                            (['m', 't', 'n'] as SlotType[]).forEach(slot => {
+                              const sigla = currentMonthData[activeDoc.id]?.[slot]?.[d] || 'X';
+                              if (sigla !== 'X') {
+                                scheduledShifts.push({ slot, sigla });
+                              }
+                            });
+
+                            // Find rural availabilities reported starting on this day
+                            const dailyRurals = personalRurals.filter(r => {
+                              const callDate = new Date(r.callDateTime);
+                              return callDate.getDate() === d;
+                            });
+
+                            return (
+                              <div 
+                                key={`day-${d}`} 
+                                className={`rounded-2xl border min-h-[105px] p-2 flex flex-col justify-between transition-all hover:shadow-md ${
+                                  isHolidayOrSunday 
+                                    ? 'bg-rose-50/60 border-rose-100/80 hover:bg-rose-50' 
+                                    : 'bg-stone-50/50 border-slate-100 hover:bg-white'
+                                }`}
+                              >
+                                {/* Day Number Header */}
+                                <div className="flex justify-between items-center mb-1">
+                                  <span className={`text-xs font-black ${isHolidayOrSunday ? 'text-rose-600' : 'text-slate-700'}`}>
+                                    {d}
+                                  </span>
+                                  {isHolidayOrSunday && (
+                                    <span className="text-[7px] font-black uppercase px-1 bg-rose-200/50 text-rose-700 rounded">
+                                      {dow === 0 ? "Dom" : "Fest"}
+                                    </span>
+                                  )}
+                                </div>
+
+                                {/* List of Scheduled Shifts (Turnero) */}
+                                <div className="space-y-1 flex-1 flex flex-col justify-start">
+                                  {scheduledShifts.map((sh, idx) => {
+                                    let slotBg = 'bg-green-500 text-white';
+                                    if (sh.slot === 't') slotBg = 'bg-blue-500 text-white';
+                                    if (sh.slot === 'n') slotBg = 'bg-purple-600 text-white animate-pulse';
+
+                                    return (
+                                      <div 
+                                        key={idx} 
+                                        className={`text-[8px] font-black uppercase px-1.5 py-0.5 rounded flex items-center justify-between gap-1 shadow-sm ${slotBg}`}
+                                        title={`Jornada: ${sh.slot.toUpperCase()} - Servicio: ${sh.sigla}`}
+                                      >
+                                        <span className="opacity-75">{sh.slot.toUpperCase()}:</span>
+                                        <span className="truncate max-w-[40px]">{sh.sigla}</span>
+                                      </div>
+                                    );
+                                  })}
+
+                                  {/* List of Rural Availabilities */}
+                                  {dailyRurals.map((r, idx) => (
+                                    <div 
+                                      key={idx} 
+                                      className="text-[8px] bg-amber-500 text-white font-extrabold px-1 py-0.5 rounded flex items-center gap-0.5 shadow-sm uppercase border border-amber-600"
+                                      title={`Paciente: ${r.patientName} (${r.netHours || r.totalHours} horas netas)`}
+                                    >
+                                      <span className="shrink-0">🚑</span>
+                                      <span className="truncate">{r.netHours ? r.netHours.toFixed(1) : r.totalHours}h</span>
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+
+                      {/* Info Footer Callout */}
+                      <div className="mt-8 p-4 bg-slate-50 border border-slate-100 rounded-3xl text-slate-500 text-[10px] md:text-xs leading-relaxed">
+                        <strong>📌 Instrucciones de la Agenda:</strong> Los turnos mostrados corresponden al plan de turnos asignados por la coordinación médica (M: Mañana, T: Tarde, N: Noche). Los bloques dorados con ambulancia (🚑) representan guardias de disponibilidades rurales autorizadas y efectivamente liquidadas en el día reportado.
+                      </div>
+                    </div>
+                  </div>
+                );
+              })()}
             </motion.div>
           )}
 
@@ -5033,6 +6524,7 @@ Usa un tono directivo, formal y conciso en español. Solo usa negritas y viñeta
                  isGenerating={isGeneratingAI}
                  selectedMonth={selectedMonth}
                  selectedYear={selectedYear}
+                 ruralAvailabilities={ruralAvailabilities}
                />
             </motion.div>
           )}
@@ -5171,43 +6663,162 @@ Usa un tono directivo, formal y conciso en español. Solo usa negritas y viñeta
                   </h2>
                   <p className="text-xs text-slate-500 font-mono">Reporte de traslados, remisiones y actividades de personal rural</p>
                 </div>
-                {isAdminUser && (
+                <div className="flex flex-wrap gap-3">
                   <button 
-                    onClick={() => {
-                        const filtered = ruralAvailabilities.filter(r => r.targetMonth === selectedMonth && r.targetYear === selectedYear);
-                        if(filtered.length === 0) return alert("No hay datos para exportar.");
-                        
-                        let csv = "\uFEFF"; // BOM for Excel
-                        csv += "ID,Médico,Fecha Llamado,Hora Llamado,Llegada Hospital,Actividad,Paciente,ID Paciente,Diagnostico,Lugar Aceptacion,Llamado Por,Fecha Termino,Hora Termino,Total Horas\n";
-                        filtered.forEach(r => {
-                          const start = new Date(r.callDateTime);
-                          const end = new Date(r.terminationDateTime);
-                          csv += `${r.id},"${r.doctorName}",${start.toLocaleDateString()},${start.toLocaleTimeString()},"${r.hospitalArrivalTime}","${r.activity.replace(/"/g, '""')}","${r.patientName}","${r.patientId}","${r.diagnosis}","${r.acceptancePlace}","${r.calledBy}",${end.toLocaleDateString()},${end.toLocaleTimeString()},${r.totalHours}\n`;
-                        });
-                        
-                        const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
-                        const url = URL.createObjectURL(blob);
-                        const link = document.createElement('a');
-                        link.href = url;
-                        link.download = `Reporte_Disponibilidades_${selectedMonth + 1}_${selectedYear}.csv`;
-                        link.click();
-                    }}
-                    className="bg-emerald-500 text-white px-6 py-3 rounded-xl font-black flex items-center gap-2 hover:scale-105 active:scale-95 transition-all shadow-lg shadow-emerald-500/20"
+                    onClick={() => exportRuralConsolidatedExcel()}
+                    className="bg-emerald-600 text-white px-5 py-3 rounded-xl font-black flex items-center gap-2 hover:scale-105 active:scale-95 transition-all shadow-lg shadow-emerald-500/20 text-xs sm:text-sm"
                   >
                     <FileSpreadsheet className="w-5 h-5" />
-                    EXPORTAR EXCEL (CSV)
+                    EXPORTAR EXCEL (.XLSX)
                   </button>
-                )}
+                  <button 
+                    onClick={() => exportRuralConsolidatedPDF()}
+                    className="bg-rose-600 text-white px-5 py-3 rounded-xl font-black flex items-center gap-2 hover:scale-105 active:scale-95 transition-all shadow-lg shadow-rose-500/20 text-xs sm:text-sm"
+                  >
+                    <FileDown className="w-5 h-5" />
+                    EXPORTAR PDF
+                  </button>
+                  <button
+                    onClick={() => syncRuralAvailabilitiesToDrive(false)}
+                    className="bg-sky-600 text-white px-6 py-3 rounded-xl font-black flex items-center gap-2 hover:scale-105 active:scale-95 transition-all shadow-lg shadow-sky-600/20 text-xs sm:text-sm"
+                  >
+                    <Cloud className="w-5 h-5" />
+                    SINCRONIZAR A DRIVE
+                  </button>
+                </div>
               </div>
 
               <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
                 {/* Form Section */}
                 <div className="lg:col-span-2 space-y-6">
-                   <div className="bg-white p-8 rounded-[32px] border border-slate-200 shadow-xl">
+                   <div className={`bg-white p-8 rounded-[32px] border transition-all duration-300 shadow-xl ${
+                     ruralOverlapInfo.deduction > 0 ? 'border-rose-500 ring-4 ring-rose-500/10' : 'border-slate-200'
+                   }`}>
+                      {/* Resumen de Horas Rurales (Consolidado Superior) */}
+                      <div className="mb-6 p-5 bg-gradient-to-br from-slate-50 to-emerald-50/30 border border-slate-100 rounded-2xl">
+                        <div className="text-[10px] text-slate-400 uppercase font-black tracking-wider mb-3">
+                          📊 Resumen Consolidado del Mes ({MONTH_NAMES[selectedMonth]} {selectedYear})
+                        </div>
+                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                          {(() => {
+                            const activeRuralDocs = doctors.filter(d => d.cat === 'Rural' && d.st === 'activo');
+                            const totalTurnero = activeRuralDocs.reduce((sum, doc) => sum + getDoctorTurneroHours(doc.id), 0);
+                            const totalDispo = ruralAvailabilities
+                              .filter(r => r.targetMonth === selectedMonth && r.targetYear === selectedYear)
+                              .reduce((sum, r) => sum + (r.netHours !== undefined ? r.netHours : (r.totalHours || 0)), 0);
+                            const totalConsolidado = totalTurnero + totalDispo;
+
+                            return (
+                              <>
+                                <div className="bg-white p-3.5 rounded-xl border border-slate-100 shadow-sm">
+                                  <div className="text-[9px] font-bold text-slate-500 uppercase">H. Turnos Programados</div>
+                                  <div className="text-lg font-black text-slate-700 mt-1">{totalTurnero.toFixed(1)}h</div>
+                                </div>
+                                <div className="bg-white p-3.5 rounded-xl border border-sky-100 shadow-sm">
+                                  <div className="text-[9px] font-bold text-sky-600 uppercase">H. Disponibilidad</div>
+                                  <div className="text-lg font-black text-sky-700 mt-1">{totalDispo.toFixed(1)}h</div>
+                                </div>
+                                <div className="bg-emerald-500/10 p-3.5 rounded-xl border border-emerald-500/20 shadow-sm">
+                                  <div className="text-[9px] font-bold text-emerald-800 uppercase">Consolidado Total</div>
+                                  <div className="text-lg font-black text-emerald-900 mt-1">{totalConsolidado.toFixed(1)}h</div>
+                                </div>
+                              </>
+                            );
+                          })()}
+                        </div>
+                      </div>
+
                       <h3 className="text-lg font-bold text-sky-600 mb-6 flex items-center gap-2">
                         <Plus className="w-5 h-5" /> Nuevo Reporte de Disponibilidad
                       </h3>
+
+                      {ruralOverlapInfo.deduction > 0 && (
+                        <div className="mb-6 p-4 bg-rose-50 border border-rose-100 rounded-2xl flex flex-col gap-2">
+                          <div className="flex items-center gap-2 text-rose-600 font-bold text-sm">
+                            <AlertCircle className="w-5 h-5 text-rose-500 shrink-0" />
+                            Alerta de Solapamiento de Jornada
+                          </div>
+                          <p className="text-xs text-rose-700 font-medium">
+                            El rango horario ingresado se cruza con turnos asignados del médico seleccionado. 
+                            Se descontarán <strong className="text-rose-900 font-black">{ruralOverlapInfo.deduction.toFixed(1)}h</strong> del total, reportando únicamente <strong className="text-emerald-700 font-black">{ruralOverlapInfo.netHours.toFixed(1)}h</strong> netas.
+                          </p>
+                          <div className="mt-2 space-y-1">
+                            <div className="text-[10px] uppercase font-black tracking-wider text-rose-500">Cruce detectado con:</div>
+                            {ruralOverlapInfo.overlaps.map((ov, idx) => (
+                              <div key={idx} className="text-xs text-rose-800 flex justify-between bg-white/60 px-3 py-1.5 rounded-lg border border-rose-100">
+                                <span className="font-semibold">Día {ov.day} - {ov.slot} ({ov.sigla})</span>
+                                <span className="font-mono text-rose-600">-{ov.overlapHours.toFixed(1)} horas</span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
                       
+                      {/* Resumen de Horas Acumuladas del Personal Rural */}
+                      <div className="mb-6 p-5 bg-gradient-to-br from-emerald-50 to-teal-50 border border-emerald-100 rounded-2xl shadow-sm">
+                        <h4 className="text-xs font-black text-emerald-800 uppercase tracking-wider mb-3 flex items-center gap-2">
+                          📊 Horas Acumuladas del Personal Rural ({MONTH_NAMES[selectedMonth]})
+                        </h4>
+                        <div className="overflow-x-auto">
+                          <table className="w-full text-left border-collapse text-xs">
+                            <thead>
+                              <tr className="border-b border-emerald-100 text-emerald-700 font-extrabold uppercase text-[10px]">
+                                <th className="py-2">Médico</th>
+                                <th className="py-2 text-center">H. Turnero</th>
+                                <th className="py-2 text-center">H. Rural</th>
+                                <th className="py-2 text-right">Total Consolidado</th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-emerald-50">
+                              {doctors
+                                .filter(d => d.cat === 'Rural' && d.st === 'activo')
+                                .map(doc => {
+                                  const turneroH = getDoctorTurneroHours(doc.id);
+                                  const ruralH = ruralAvailabilities
+                                    .filter(r => r.doctorId === doc.id && r.targetMonth === selectedMonth && r.targetYear === selectedYear)
+                                    .reduce((sum, r) => sum + (r.netHours !== undefined ? r.netHours : (r.totalHours || 0)), 0);
+                                  const consolidatedH = turneroH + ruralH;
+                                  
+                                  const isSelected = Number(ruralSelectedDoctorId) === doc.id;
+                                  
+                                  return (
+                                    <tr 
+                                      key={doc.id} 
+                                      onClick={() => setRuralSelectedDoctorId(doc.id.toString())}
+                                      className={`cursor-pointer transition-all hover:bg-emerald-100/40 ${isSelected ? 'bg-emerald-100/70 font-black text-emerald-900 border-l-4 border-l-emerald-600 pl-2' : 'text-slate-700'}`}
+                                    >
+                                      <td className="py-2.5 font-bold flex items-center gap-1.5">
+                                        {isSelected && <span className="text-emerald-600">➡️</span>}
+                                        {doc.nombre} {doc.apellidos || ''}
+                                      </td>
+                                      <td className="py-2.5 text-center font-mono">{turneroH.toFixed(1)}h</td>
+                                      <td className="py-2.5 text-center font-mono">{ruralH.toFixed(1)}h</td>
+                                      <td className="py-2.5 text-right font-mono font-extrabold text-teal-800">{consolidatedH.toFixed(1)}h</td>
+                                    </tr>
+                                  );
+                                })}
+                            </tbody>
+                          </table>
+                        </div>
+                        <p className="text-[10px] text-emerald-700/80 mt-2 italic">
+                          💡 Haga clic en un médico de la lista para seleccionarlo directamente en el formulario.
+                        </p>
+                      </div>
+
+                      <div className="mb-6 bg-slate-50 p-4 rounded-2xl border border-slate-100">
+                         <label className="text-[10px] text-sky-600 uppercase font-black ml-1 mb-2 block font-black">Médico Rural que realiza la disponibilidad *</label>
+                         <select 
+                           className="w-full bg-white border border-slate-200 p-3 rounded-xl text-slate-800 outline-none focus:border-emerald-500 font-bold"
+                           value={ruralSelectedDoctorId}
+                           onChange={e => setRuralSelectedDoctorId(e.target.value)}
+                         >
+                           <option value="">-- Seleccione el médico rural --</option>
+                           {doctors.filter(d => d.cat === 'Rural' && d.st === 'activo').map(d => (
+                             <option key={d.id} value={d.id}>{d.nombre} {d.apellidos || ''}</option>
+                           ))}
+                         </select>
+                      </div>
+
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                         <div className="space-y-4">
                            <div>
@@ -5241,8 +6852,27 @@ Usa un tono directivo, formal y conciso en español. Solo usa negritas y viñeta
                               <input type="text" className="w-full bg-slate-50 border border-slate-200 p-3 rounded-xl text-slate-800 outline-none focus:border-emerald-500" value={ruralAcceptancePlace} onChange={e => setRuralAcceptancePlace(e.target.value)} />
                            </div>
                            <div>
-                              <label className="text-[10px] text-slate-400 uppercase font-black ml-2 mb-1 block">¿Quién lo llamó?</label>
-                              <input type="text" className="w-full bg-slate-50 border border-slate-200 p-3 rounded-xl text-slate-800 outline-none focus:border-emerald-500" value={ruralCalledBy} onChange={e => setRuralCalledBy(e.target.value)} />
+                              <label className="text-[10px] text-sky-600 uppercase font-black ml-2 mb-1 block font-black">¿Quién lo llamó? (Autorizador Jefe *)</label>
+                              <select 
+                                className="w-full bg-slate-50 border border-slate-200 p-3 rounded-xl text-slate-800 outline-none focus:border-emerald-500 font-bold"
+                                value={ruralCalledById}
+                                onChange={e => {
+                                  const val = e.target.value;
+                                  setRuralCalledById(val ? Number(val) : '');
+                                  const auth = availCallAuthorizers.find(a => a.id === Number(val));
+                                  setRuralCalledBy(auth ? `${auth.nombre} ${auth.apellidos || ''}`.trim() : '');
+                                }}
+                              >
+                                <option value="">-- Seleccione Autorizador (Enfermera Jefe / Admin) --</option>
+                                {availCallAuthorizers.map(a => {
+                                  const onDuty = isDoctorOnDutyOnDate(a.id, ruralCallDate, ruralCallTime);
+                                  return (
+                                    <option key={a.id} value={a.id}>
+                                      {a.nombre} {a.apellidos || ''} ({a.rol}){onDuty ? ' 🔥 DE TURNO' : ''}
+                                    </option>
+                                  );
+                                })}
+                              </select>
                            </div>
                            <div>
                               <label className="text-[10px] text-slate-400 uppercase font-black ml-2 mb-1 block">Fecha y Hora de Término *</label>
@@ -5285,14 +6915,199 @@ Usa un tono directivo, formal y conciso en español. Solo usa negritas y viñeta
                       </button>
                    </div>
 
+                   {/* Pending Signatures Section */}
+                   {pendingAuthorizations.length > 0 && (
+                     <div className="bg-amber-50/50 p-8 rounded-[32px] border border-amber-200/60 shadow-xl space-y-6">
+                        <h3 className="text-lg font-bold text-amber-700 flex items-center gap-2">
+                          <span className="p-1.5 bg-amber-100 rounded-lg text-amber-800 text-sm">✍️</span>
+                          Firma de Autorizaciones Pendientes ({pendingAuthorizations.length})
+                        </h3>
+                        <p className="text-xs text-slate-500 font-medium leading-relaxed">
+                          Usted ha sido seleccionado como autorizador de estos llamados. Por favor revise los detalles y firme digitalmente para habilitar la disponibilidad.
+                        </p>
+                        <div className="space-y-4">
+                          {pendingAuthorizations.map(r => (
+                            <div key={r.id} className="bg-white p-5 rounded-2xl border border-amber-200/40 flex flex-col md:flex-row justify-between items-start md:items-center gap-4 hover:border-amber-500/50 transition-all shadow-sm">
+                              <div className="space-y-1 flex-1">
+                                <div className="flex items-center gap-2">
+                                  <span className="text-xs font-black uppercase text-amber-800 bg-amber-100/50 px-2.5 py-0.5 rounded border border-amber-200/30">Llamado por firmar</span>
+                                  <span className="text-xs text-slate-500 font-bold">{new Date(r.callDateTime).toLocaleDateString()}</span>
+                                </div>
+                                <h4 className="font-extrabold text-slate-800 text-sm">Médico: {r.doctorName}</h4>
+                                <div className="text-xs text-slate-600 grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-1">
+                                  <div><strong>Paciente:</strong> {r.patientName}</div>
+                                  <div><strong>Destino:</strong> {r.acceptancePlace || 'Sin destino'}</div>
+                                  <div className="sm:col-span-2"><strong>Actividad:</strong> <span className="italic">"{r.activity}"</span></div>
+                                  <div><strong>Horas Reportadas:</strong> <span className="font-black text-amber-700">{r.totalHours}h</span></div>
+                                </div>
+                              </div>
+                              <button 
+                                onClick={() => setSigningAvailability(r)}
+                                className="w-full md:w-auto px-5 py-3 bg-amber-600 text-white rounded-xl font-bold text-xs hover:bg-amber-700 transition-all flex items-center justify-center gap-2 shadow-md shadow-amber-600/10 shrink-0"
+                              >
+                                ✍️ FIRMAR DIGITALMENTE
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                     </div>
+                   )}
+
                    {/* History List */}
                    <div className="bg-white p-8 rounded-[32px] border border-slate-200 shadow-xl">
-                      <h3 className="text-lg font-bold text-emerald-600 mb-6 flex items-center gap-2">
-                        <Clock className="w-5 h-5" /> Mi Historial de Disponibilidades
+                      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-6">
+                        <div>
+                          <h3 className="text-lg font-bold text-emerald-600 flex items-center gap-2">
+                            <Clock className="w-5 h-5" /> Historial de Disponibilidades
+                          </h3>
+                          <p className="text-[11px] text-slate-500 font-medium">Registro detallado de disponibilidades y horas efectivas reportadas</p>
+                        </div>
+                        <div className="flex items-center gap-2 bg-slate-100 p-1 rounded-xl">
+                          <button
+                            onClick={() => setRuralViewMode('table')}
+                            className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${ruralViewMode === 'table' ? 'bg-emerald-600 text-white shadow-sm' : 'text-slate-600 hover:text-slate-900'}`}
+                          >
+                            Filas (Mes)
+                          </button>
+                          <button
+                            onClick={() => setRuralViewMode('cards')}
+                             className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${ruralViewMode === 'cards' ? 'bg-emerald-600 text-white shadow-sm' : 'text-slate-600 hover:text-slate-900'}`}
+                          >
+                            Tarjetas
+                          </button>
+                        </div>
+                      </div>
+                       <button
+                         onClick={() => setShowVerifyModal(true)}
+                         className="bg-sky-50 hover:bg-sky-100 text-sky-700 px-4 py-2 rounded-xl border border-sky-200 font-extrabold text-[11px] uppercase flex items-center gap-2 transition-all shadow-sm mb-4"
+                       >
+                         🛡️ Verificar Integridad PDF
+                       </button>
+                       <h3 className="hidden">
                       </h3>
-                      <div className="space-y-4">
-                        {ruralAvailabilities
-                          .filter(r => (isAdminUser ? true : r.doctorId === session.doctorId))
+                      {ruralViewMode === 'table' ? (
+                        <div className="overflow-x-auto rounded-2xl border border-slate-200 shadow-sm">
+                          <table className="w-full text-left border-collapse text-xs">
+                            <thead>
+                              <tr className="bg-slate-50 text-slate-600 uppercase font-bold border-b border-slate-200 text-[10px] tracking-wider">
+                                <th className="p-4 text-center">No.</th>
+                                <th className="p-4">Médico</th>
+                                <th className="p-4">Fecha</th>
+                                <th className="p-4">Ingreso / Egreso</th>
+                                <th className="p-4 text-center">H. Brutas</th>
+                                <th className="p-4 text-center">Deducción</th>
+                                <th className="p-4 text-center font-bold text-emerald-700 bg-emerald-50/50">H. Efectivas</th>
+                                <th className="p-4">Paciente (ID)</th>
+                                <th className="p-4">Diagnóstico / Destino</th>
+                                <th className="p-4">Actividad</th>
+                                <th className="p-4">Autorización</th>
+                                <th className="p-4 text-center">Acciones</th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-slate-100">
+                              {ruralAvailabilities
+                                .filter(r => (isAdminUser ? true : r.doctorId === session?.doctorId))
+                                .filter(r => r.targetMonth === selectedMonth && r.targetYear === selectedYear)
+                                .sort((a,b) => b.callDateTime - a.callDateTime)
+                                .map((r, index, arr) => {
+                                  const start = new Date(r.callDateTime);
+                                  const end = new Date(r.terminationDateTime);
+                                  const gross = r.grossHours !== undefined ? r.grossHours : r.totalHours;
+                                  const ded = r.deduction !== undefined ? r.deduction : 0;
+                                  const net = r.netHours !== undefined ? r.netHours : r.totalHours;
+
+                                  return (
+                                    <tr key={r.id} className="hover:bg-slate-50/80 transition-all">
+                                      <td className="p-4 text-center font-mono text-slate-400 font-bold">{arr.length - index}</td>
+                                      <td className="p-4 font-bold text-slate-800">{r.doctorName}</td>
+                                      <td className="p-4 font-mono text-slate-600 whitespace-nowrap">{start.toLocaleDateString()}</td>
+                                      <td className="p-4 text-slate-500 whitespace-nowrap font-mono text-[10px]">
+                                        <div>In: {start.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'})}</div>
+                                        <div>Out: {end.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'})}</div>
+                                      </td>
+                                      <td className="p-4 text-center font-mono font-bold text-slate-600">{gross.toFixed(1)}h</td>
+                                      <td className="p-4 text-center font-mono font-bold text-rose-500">{ded > 0 ? `-${ded.toFixed(1)}h` : '-'}</td>
+                                      <td className="p-4 text-center font-mono font-black text-emerald-700 bg-emerald-50/40 text-sm">
+                                        <div>{net.toFixed(1)}h</div>
+                                        {/* Daily breakdown of effective hours */}
+                                        {(() => {
+                                          const daysBreakdown = getDailyRuralBreakdown(r);
+                                          if (daysBreakdown.length > 1) {
+                                            return (
+                                              <div className="mt-1.5 flex flex-col gap-0.5 text-[9px] text-slate-500 border-t border-emerald-100/60 pt-1 font-normal">
+                                                {daysBreakdown.map((bd, bi) => (
+                                                  <div key={bi} className="flex justify-between gap-1.5 whitespace-nowrap bg-white/40 px-1 py-0.5 rounded border border-emerald-50/30">
+                                                    <span className="text-slate-400">Día {bd.dayNum}:</span>
+                                                    <span className="font-bold text-emerald-600">{bd.netHours.toFixed(1)}h</span>
+                                                  </div>
+                                                ))}
+                                              </div>
+                                            );
+                                          }
+                                          return null;
+                                        })()}
+                                      </td>
+                                      <td className="p-4 text-slate-600">
+                                        <div className="font-bold">{r.patientName}</div>
+                                        <div className="text-[10px] text-slate-400 font-mono">ID: {r.patientId || 'N/A'}</div>
+                                      </td>
+                                      <td className="p-4 text-slate-600 max-w-[180px] truncate" title={`${r.diagnosis || ''} -> ${r.acceptancePlace || ''}`}>
+                                        <div className="font-medium truncate">Diag: {r.diagnosis || 'N/A'}</div>
+                                        <div className="text-[10px] text-slate-400 font-mono truncate">Dest: {r.acceptancePlace || 'N/A'}</div>
+                                      </td>
+                                      <td className="p-4 text-slate-500 font-medium italic max-w-[150px] truncate" title={r.activity}>
+                                        {r.activity}
+                                      </td>
+                                      <td className="p-4">
+                                        {r.authorizedStatus === 'signed' ? (
+                                          <div className="flex flex-col gap-1">
+                                            <span className="text-[9px] bg-emerald-100 text-emerald-800 px-1.5 py-0.5 rounded font-bold w-fit">
+                                              ✔️ {r.calledBy}
+                                            </span>
+                                            {r.authorizerSignature && (
+                                              <img src={r.authorizerSignature} alt="Firma" className="h-5 w-auto object-contain bg-white border border-slate-100 rounded" />
+                                            )}
+                                          </div>
+                                        ) : (
+                                          <span className="text-[9px] bg-amber-100 text-amber-800 px-1.5 py-0.5 rounded font-bold whitespace-nowrap">
+                                            ⏳ Pendiente ({r.calledBy})
+                                          </span>
+                                        )}
+                                      </td>
+                                      <td className="p-4">
+                                        <div className="flex items-center justify-center gap-1">
+                                          <button
+                                            onClick={() => exportRuralAvailabilityPDF(r)}
+                                            className="p-1.5 bg-sky-50 text-sky-600 rounded-lg hover:bg-sky-500 hover:text-white transition-all"
+                                            title="Exportar Reporte PDF"
+                                          >
+                                            <FileDown className="w-3.5 h-3.5" />
+                                          </button>
+                                          {isAdminUser && (
+                                            <button 
+                                              onClick={async () => {
+                                                if(confirm("¿Eliminar este registro?")) {
+                                                  await deleteDoc(doc(db, 'ruralAvailability', r.id));
+                                                }
+                                              }}
+                                              className="p-1.5 bg-rose-50 text-rose-500 rounded-lg hover:bg-rose-500 hover:text-white transition-all"
+                                              title="Eliminar registro"
+                                            >
+                                              <Trash2 className="w-3.5 h-3.5" />
+                                            </button>
+                                          )}
+                                        </div>
+                                      </td>
+                                    </tr>
+                                  );
+                                })}
+                            </tbody>
+                          </table>
+                        </div>
+                      ) : (
+                        <div className="space-y-4">
+                          {ruralAvailabilities
+                          .filter(r => (isAdminUser ? true : r.doctorId === session?.doctorId))
                           .sort((a,b) => b.callDateTime - a.callDateTime)
                           .map(r => (
                           <div key={r.id} className="bg-slate-50 p-5 rounded-2xl border border-slate-200 flex flex-wrap justify-between items-center gap-4 group hover:border-emerald-500/40 transition-all">
@@ -5306,9 +7121,39 @@ Usa un tono directivo, formal y conciso en español. Solo usa negritas y viñeta
                                    <span className="flex items-center gap-1"><Info className="w-3 h-3" /> {r.acceptancePlace || 'Sin destino'}</span>
                                 </div>
                                 <p className="text-[11px] text-slate-400 mt-2 line-clamp-1 italic">"{r.activity}"</p>
-                                {isAdminUser && <div className="text-[9px] text-slate-400 mt-1">Médico: {r.doctorName}</div>}
+                                <div className="text-[9px] text-slate-400 mt-1">Médico: {r.doctorName}</div>
+
+                                {r.authorizedStatus && (
+                                  <div className="mt-3 flex flex-wrap items-center gap-3">
+                                    {r.authorizedStatus === 'signed' ? (
+                                      <span className="text-[10px] bg-emerald-50 border border-emerald-200 text-emerald-700 px-2.5 py-1 rounded-lg font-black flex items-center gap-1">
+                                        ✔️ Autorizado por {r.calledBy}
+                                      </span>
+                                    ) : (
+                                      <span className="text-[10px] bg-amber-50 border border-amber-200 text-amber-700 px-2.5 py-1 rounded-lg font-black flex items-center gap-1">
+                                        ⏳ Pendiente de Firma ({r.calledBy})
+                                      </span>
+                                    )}
+                                    
+                                    {r.authorizerSignature && (
+                                      <div className="bg-white border border-slate-200 p-1 rounded-lg flex items-center gap-2 shadow-sm">
+                                        <span className="text-[9px] text-slate-400 uppercase font-black px-1">Firma:</span>
+                                        <img src={r.authorizerSignature} alt="Firma Digital" className="h-6 w-auto object-contain bg-slate-50 border border-slate-100 rounded" referrerPolicy="no-referrer" />
+                                      </div>
+                                    )}
+                                  </div>
+                                )}
                              </div>
-                             {isAdminUser && (
+                             <div className="flex items-center gap-2">
+                               <button
+                                 onClick={() => exportRuralAvailabilityPDF(r)}
+                                 className="p-3 bg-sky-500/10 text-sky-600 rounded-xl hover:bg-sky-500 hover:text-white transition-all flex items-center justify-center gap-1.5 font-bold text-xs"
+                                 title="Exportar Reporte PDF con firma y hash"
+                               >
+                                 <FileDown className="w-4 h-4" />
+                                 <span>PDF</span>
+                               </button>
+                               {isAdminUser && (
                                <button 
                                 onClick={async () => {
                                   if(confirm("¿Eliminar este registro?")) {
@@ -5319,10 +7164,14 @@ Usa un tono directivo, formal y conciso en español. Solo usa negritas y viñeta
                                >
                                  <Trash2 className="w-5 h-5" />
                                </button>
+                              )}
+                             </div>
+                             {false && (null
                              )}
                           </div>
                         ))}
                       </div>
+                      )}
                    </div>
                 </div>
 
@@ -5334,11 +7183,29 @@ Usa un tono directivo, formal y conciso en español. Solo usa negritas y viñeta
                       </div>
                       <div className="space-y-6 relative z-10">
                         <div>
-                           <p className="text-[10px] text-emerald-600 uppercase font-black mb-2 flex justify-between">Horas Totales (Mes) <Clock className="w-3 h-3" /></p>
+                           <p className="text-[10px] text-emerald-600 uppercase font-black mb-2 flex justify-between">Consolidado Total (Mes) <Clock className="w-3 h-3" /></p>
                            <div className="text-4xl font-black text-slate-800">
-                              {ruralAvailabilities
-                                .filter(r => r.targetMonth === selectedMonth && r.targetYear === selectedYear)
-                                .reduce((acc, curr) => acc + curr.totalHours, 0).toFixed(1)}h
+                              {(() => {
+                                const turneroH = doctors
+                                  .filter(d => d.cat === 'Rural' && d.st === 'activo')
+                                  .reduce((sum, doc) => sum + getDoctorTurneroHours(doc.id), 0);
+                                const ruralH = ruralAvailabilities
+                                  .filter(r => r.targetMonth === selectedMonth && r.targetYear === selectedYear)
+                                  .reduce((sum, curr) => sum + (curr.netHours !== undefined ? curr.netHours : (curr.totalHours || 0)), 0);
+                                return (turneroH + ruralH).toFixed(1);
+                              })()}h
+                           </div>
+                           <div className="text-[10px] text-slate-500 font-mono mt-2 space-y-0.5">
+                             <div>• Turnos Programados: {
+                               doctors
+                                 .filter(d => d.cat === 'Rural' && d.st === 'activo')
+                                 .reduce((sum, doc) => sum + getDoctorTurneroHours(doc.id), 0).toFixed(1)
+                             }h</div>
+                             <div>• Horas de Disponibilidad: {
+                               ruralAvailabilities
+                                 .filter(r => r.targetMonth === selectedMonth && r.targetYear === selectedYear)
+                                 .reduce((sum, curr) => sum + (curr.netHours !== undefined ? curr.netHours : (curr.totalHours || 0)), 0).toFixed(1)
+                             }h</div>
                            </div>
                         </div>
 
@@ -5874,7 +7741,7 @@ Usa un tono directivo, formal y conciso en español. Solo usa negritas y viñeta
             </motion.div>
           )}
 
-          {activeTab === 'admin' && session.r === 'admin' && (
+          {activeTab === 'admin' && (session?.r === 'admin' || isJefeDeServicio) && (
             <motion.div 
               key="admin" 
               initial={{ opacity: 0, scale: 0.98 }} 
@@ -5987,6 +7854,140 @@ Usa un tono directivo, formal y conciso en español. Solo usa negritas y viñeta
                     </button>
                  </div>
               </div>
+
+              {/* Emergency Notifications Configuration per Doctor Role */}
+              <div className="bg-white rounded-[32px] p-8 border border-emerald-100 shadow-xl">
+                 <h3 className="text-xl font-bold text-emerald-700 mb-4 flex items-center gap-2">
+                    <BellRing className="w-6 h-6 text-emerald-600" /> Configuración de Notificaciones de Código de Emergencia
+                 </h3>
+                 <p className="text-xs text-slate-500 mb-6 leading-relaxed font-semibold">
+                    Configure qué roles de médicos recibirán notificaciones push automáticas cuando se active un <strong>CÓDIGO ROJO (Obstetricia)</strong> o un <strong>CÓDIGO AZUL (Paro Cardio-Respiratorio)</strong>. Los jefes de servicio y administradores pueden modificar esta lista para adecuar la respuesta inmediata.
+                 </p>
+                 
+                 <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+                    {/* Código Rojo Column */}
+                    <div className="bg-rose-50/40 p-6 rounded-2xl border border-rose-100">
+                       <div className="flex items-center gap-2 mb-4">
+                          <div className="p-1.5 bg-rose-100 text-rose-600 rounded-lg">
+                             <Flame className="w-4 h-4" />
+                          </div>
+                          <h4 className="font-extrabold text-rose-800 text-sm">CÓDIGO ROJO (Obstétrico)</h4>
+                       </div>
+                       <div className="space-y-2 max-h-60 overflow-y-auto pr-2 custom-scrollbar">
+                          {ALL_ROLES.map(role => {
+                             const isChecked = emergencyConfig.rojoRoles.includes(role);
+                             return (
+                                <label key={role} className="flex items-center justify-between p-2.5 bg-white rounded-xl border border-rose-100/50 hover:border-rose-300 transition-all cursor-pointer shadow-sm">
+                                   <span className="text-xs font-bold text-slate-700">{role}</span>
+                                   <input 
+                                      type="checkbox"
+                                      checked={isChecked}
+                                      onChange={(e) => {
+                                         const checked = e.target.checked;
+                                         const newRoles = checked 
+                                            ? [...emergencyConfig.rojoRoles, role]
+                                            : emergencyConfig.rojoRoles.filter(r => r !== role);
+                                         setEmergencyConfig({ ...emergencyConfig, rojoRoles: newRoles });
+                                      }}
+                                      className="w-4 h-4 text-rose-600 border-slate-300 rounded focus:ring-rose-500 accent-rose-600"
+                                   />
+                                </label>
+                             );
+                          })}
+                       </div>
+                    </div>
+
+                    {/* Código Azul Column */}
+                    <div className="bg-blue-50/40 p-6 rounded-2xl border border-blue-100">
+                       <div className="flex items-center gap-2 mb-4">
+                          <div className="p-1.5 bg-blue-100 text-blue-600 rounded-lg">
+                             <Activity className="w-4 h-4" />
+                          </div>
+                          <h4 className="font-extrabold text-blue-800 text-sm">CÓDIGO AZUL (Reanimación)</h4>
+                       </div>
+                       <div className="space-y-2 max-h-60 overflow-y-auto pr-2 custom-scrollbar">
+                          {ALL_ROLES.map(role => {
+                             const isChecked = emergencyConfig.azulRoles.includes(role);
+                             return (
+                                <label key={role} className="flex items-center justify-between p-2.5 bg-white rounded-xl border border-blue-100/50 hover:border-blue-300 transition-all cursor-pointer shadow-sm">
+                                   <span className="text-xs font-bold text-slate-700">{role}</span>
+                                   <input 
+                                      type="checkbox"
+                                      checked={isChecked}
+                                      onChange={(e) => {
+                                         const checked = e.target.checked;
+                                         const newRoles = checked 
+                                            ? [...emergencyConfig.azulRoles, role]
+                                            : emergencyConfig.azulRoles.filter(r => r !== role);
+                                         setEmergencyConfig({ ...emergencyConfig, azulRoles: newRoles });
+                                      }}
+                                      className="w-4 h-4 text-blue-600 border-slate-300 rounded focus:ring-blue-500 accent-blue-600"
+                                   />
+                                </label>
+                             );
+                          })}
+                       </div>
+                    </div>
+                 </div>
+                 
+                 <button 
+                    onClick={() => saveEmergencyConfig(emergencyConfig)}
+                    className="w-full bg-emerald-700 text-white font-black py-4 rounded-2xl hover:bg-emerald-800 transition-all shadow-lg flex items-center justify-center gap-2 mt-6"
+                 >
+                    <Save className="w-5 h-5" /> GUARDAR CONFIGURACIÓN DE NOTIFICACIONES DE EMERGENCIA
+                  </button>
+               </div>
+
+               {/* Configuración de Notificaciones de Censo Diario */}
+               <div className="bg-white rounded-[32px] p-8 border border-emerald-100 shadow-xl">
+                  <h3 className="text-xl font-bold text-emerald-700 mb-2 flex items-center gap-2">
+                     <ClipboardPaste className="w-6 h-6 text-emerald-600" /> Recordatorio Diario de Censo de Servicio
+                  </h3>
+                  <p className="text-[10px] text-slate-400 mb-6 uppercase font-bold">Configure una hora específica para recordar a los médicos activos realizar el reporte del censo diario.</p>
+                  
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                     <div className="flex flex-col gap-2">
+                        <label className="text-xs text-emerald-600 uppercase font-black">Estado del Recordatorio</label>
+                        <label className="flex items-center gap-3 p-3 bg-stone-50 border border-emerald-100 rounded-xl cursor-pointer">
+                           <input 
+                              type="checkbox"
+                              checked={censusNotificationConfig.enabled}
+                              onChange={(e) => setCensusNotificationConfig({ ...censusNotificationConfig, enabled: e.target.checked })}
+                              className="w-5 h-5 text-emerald-600 border-slate-300 rounded focus:ring-emerald-500 accent-emerald-600"
+                           />
+                           <span className="text-xs font-bold text-slate-700">{censusNotificationConfig.enabled ? "ACTIVADO" : "DESACTIVADO"}</span>
+                        </label>
+                     </div>
+
+                     <div className="flex flex-col gap-2">
+                        <label className="text-xs text-emerald-600 uppercase font-black">Hora de Envío (Formato 24h)</label>
+                        <input 
+                           type="time"
+                           value={censusNotificationConfig.time}
+                           onChange={(e) => setCensusNotificationConfig({ ...censusNotificationConfig, time: e.target.value })}
+                           className="w-full bg-stone-50 border border-emerald-100 p-3 rounded-xl text-slate-800 outline-none focus:border-emerald-500 font-bold"
+                        />
+                     </div>
+
+                     <div className="flex flex-col gap-2">
+                        <label className="text-xs text-emerald-600 uppercase font-black">Mensaje del Recordatorio</label>
+                        <input 
+                           type="text"
+                           value={censusNotificationConfig.message}
+                           onChange={(e) => setCensusNotificationConfig({ ...censusNotificationConfig, message: e.target.value })}
+                           placeholder="Ej: Recuerde reportar el censo diario..."
+                           className="w-full bg-stone-50 border border-emerald-100 p-3 rounded-xl text-slate-800 outline-none focus:border-emerald-500 font-medium"
+                        />
+                     </div>
+                  </div>
+                  
+                  <button 
+                     onClick={() => saveCensusNotificationConfig(censusNotificationConfig)}
+                     className="w-full bg-emerald-700 text-white font-black py-4 rounded-2xl hover:bg-emerald-800 transition-all shadow-lg flex items-center justify-center gap-2 mt-6"
+                  >
+                     <Save className="w-5 h-5" /> GUARDAR CONFIGURACIÓN DE NOTIFICACIONES DE CENSO
+                  </button>
+               </div>
 
               {/* AI Capacity Report */}
               <div className="bg-white rounded-[32px] p-8 border border-emerald-100 shadow-xl relative overflow-hidden">
@@ -6179,13 +8180,15 @@ Usa un tono directivo, formal y conciso en español. Solo usa negritas y viñeta
         {[
           { id: 'home', icon: ChevronRight, label: 'Home' },
           { id: 'turnos', icon: Calendar, label: 'Turnos' },
+          { id: 'calendario-test', icon: Calendar, label: 'Mi Cal' },
+          { id: 'census', icon: ClipboardList, label: 'Censo' },
+          { id: 'rural', icon: MapPin, label: 'Rural' },
           { id: 'committee', icon: FileCheck, label: 'Comité' },
           { id: 'pic', icon: BookOpen, label: 'PIC' },
           { id: 'solicitudes', icon: Send, label: 'Solicitudes' },
-          { id: 'rural', icon: MapPin, label: 'Rural' },
           { id: 'novedades', icon: ClipboardList, label: 'Novedades' },
           { id: 'whatsapp', icon: MessageCircle, label: 'WhatsApp', isExternal: true, url: 'https://wa.me/573173683886?mode=gi_t' },
-          ...(session?.r === 'admin' ? [{ id: 'admin', icon: Settings, label: 'Admin' }] : [])
+          ...((session?.r === 'admin' || isJefeDeServicio) ? [{ id: 'admin', icon: Settings, label: 'Admin' }] : [])
         ].map(btn => (
           <button
             key={btn.id}
@@ -6964,6 +8967,190 @@ Usa un tono directivo, formal y conciso en español. Solo usa negritas y viñeta
           </div>
         )}
       </AnimatePresence>
+
+      {signingAvailability && (
+        <SignaturePadModal 
+          availability={signingAvailability}
+          onClose={() => setSigningAvailability(null)}
+          onSave={handleSignAvailability}
+        />
+      )}
     </div>
   );
 }
+
+const SignaturePadModal = ({ 
+  availability, 
+  onClose, 
+  onSave 
+}: { 
+  availability: RuralAvailability; 
+  onClose: () => void; 
+  onSave: (signatureDataUrl: string) => Promise<void>;
+}) => {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const [isDrawing, setIsDrawing] = useState(false);
+  const [hasDrawn, setHasDrawn] = useState(false);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    
+    // Clear canvas & set styles
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.strokeStyle = '#0f172a'; // slate-900
+    ctx.lineWidth = 3;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+  }, [availability]);
+
+  const getCoordinates = (e: React.MouseEvent | React.TouchEvent) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return { x: 0, y: 0 };
+    const rect = canvas.getBoundingClientRect();
+    
+    // Handle touch events
+    if ('touches' in e) {
+      if (e.touches.length === 0) return { x: 0, y: 0 };
+      return {
+        x: e.touches[0].clientX - rect.left,
+        y: e.touches[0].clientY - rect.top
+      };
+    }
+    
+    // Handle mouse events
+    return {
+      x: e.clientX - rect.left,
+      y: e.clientY - rect.top
+    };
+  };
+
+  const startDrawing = (e: React.MouseEvent<HTMLCanvasElement> | React.TouchEvent<HTMLCanvasElement>) => {
+    e.preventDefault();
+    const coords = getCoordinates(e);
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    ctx.beginPath();
+    ctx.moveTo(coords.x, coords.y);
+    setIsDrawing(true);
+    setHasDrawn(true);
+  };
+
+  const draw = (e: React.MouseEvent<HTMLCanvasElement> | React.TouchEvent<HTMLCanvasElement>) => {
+    if (!isDrawing) return;
+    e.preventDefault();
+    const coords = getCoordinates(e);
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    ctx.lineTo(coords.x, coords.y);
+    ctx.stroke();
+  };
+
+  const stopDrawing = () => {
+    setIsDrawing(false);
+  };
+
+  const clearCanvas = () => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    setHasDrawn(false);
+  };
+
+  const handleSave = async () => {
+    const canvas = canvasRef.current;
+    if (!canvas || !hasDrawn) {
+      return alert("Por favor dibuje su firma antes de guardar.");
+    }
+    const dataUrl = canvas.toDataURL('image/png');
+    await onSave(dataUrl);
+  };
+
+  return (
+    <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[9999] flex items-center justify-center p-4">
+      <div className="bg-white rounded-3xl shadow-2xl max-w-lg w-full overflow-hidden border border-slate-100 flex flex-col">
+        {/* Header */}
+        <div className="p-6 bg-slate-50 border-b border-slate-100 flex justify-between items-center">
+          <div>
+            <h3 className="text-lg font-bold text-slate-900">Autorización Digital de Disponibilidad</h3>
+            <p className="text-xs text-slate-500">Médico: {availability.doctorName}</p>
+          </div>
+          <button 
+            onClick={onClose}
+            className="p-2 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-full transition-all"
+          >
+            <span className="text-lg font-bold">✕</span>
+          </button>
+        </div>
+
+        {/* Content */}
+        <div className="p-6 space-y-4 flex-1">
+          <div className="text-xs text-slate-600 bg-sky-50 border border-sky-100/50 p-4 rounded-2xl space-y-1">
+            <div className="flex justify-between"><strong>Paciente:</strong> <span>{availability.patientName}</span></div>
+            <div className="flex justify-between"><strong>Diagnóstico:</strong> <span>{availability.diagnosis || 'N/A'}</span></div>
+            <div className="flex justify-between"><strong>Actividad:</strong> <span>{availability.activity}</span></div>
+            <div className="flex justify-between"><strong>Horas Netas:</strong> <span className="font-bold text-sky-700">{availability.totalHours} h</span></div>
+          </div>
+
+          <div className="space-y-2">
+            <label className="text-[10px] text-slate-400 uppercase font-black tracking-wider block">Dibuje su firma en el recuadro abajo *</label>
+            <div className="border-2 border-dashed border-slate-200 rounded-2xl overflow-hidden bg-slate-50 relative h-48">
+              <canvas
+                ref={canvasRef}
+                width={460}
+                height={190}
+                className="w-full h-full cursor-crosshair touch-none bg-white"
+                onMouseDown={startDrawing}
+                onMouseMove={draw}
+                onMouseUp={stopDrawing}
+                onMouseLeave={stopDrawing}
+                onTouchStart={startDrawing}
+                onTouchMove={draw}
+                onTouchEnd={stopDrawing}
+              />
+              {!hasDrawn && (
+                <div className="absolute inset-0 pointer-events-none flex items-center justify-center text-slate-400/80 text-xs italic">
+                  Presione y arrastre para firmar aquí
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+
+        {/* Footer */}
+        <div className="p-6 bg-slate-50 border-t border-slate-100 flex gap-4 justify-between">
+          <button 
+            onClick={clearCanvas}
+            className="px-5 py-2.5 bg-slate-200 hover:bg-slate-300 text-slate-700 rounded-xl font-bold text-xs transition-all"
+          >
+            Limpiar Recuadro
+          </button>
+          <div className="flex gap-2">
+            <button 
+              onClick={onClose}
+              className="px-5 py-2.5 bg-white border border-slate-200 hover:bg-slate-50 text-slate-600 rounded-xl font-bold text-xs transition-all"
+            >
+              Cancelar
+            </button>
+            <button 
+              onClick={handleSave}
+              className="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold text-xs transition-all shadow-lg shadow-emerald-500/10"
+            >
+              Firmar y Autorizar
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};

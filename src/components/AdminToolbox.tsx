@@ -10,11 +10,13 @@ import {
   CheckCircle,
   Database,
   Users as UsersIcon,
-  Clock
+  Clock,
+  AlertTriangle,
+  Activity
 } from 'lucide-react';
-import { AIEngineSettings, SlotType, VarSlotConfig, Doctor } from '../types';
+import { AIEngineSettings, SlotType, VarSlotConfig, Doctor, RuralAvailability } from '../types';
 import * as XLSX from 'xlsx';
-import { doc, getDoc, setDoc } from 'firebase/firestore';
+import { doc, getDoc, setDoc, collection } from 'firebase/firestore';
 import { db, handleFirestoreError, OperationType } from '../firebase';
 
 interface AdminToolboxProps {
@@ -25,6 +27,7 @@ interface AdminToolboxProps {
   isGenerating: boolean;
   selectedMonth: number;
   selectedYear: number;
+  ruralAvailabilities: RuralAvailability[];
 }
 
 export const AdminToolbox: React.FC<AdminToolboxProps> = ({ 
@@ -34,7 +37,8 @@ export const AdminToolbox: React.FC<AdminToolboxProps> = ({
   onGenerateProposal, 
   isGenerating,
   selectedMonth,
-  selectedYear
+  selectedYear,
+  ruralAvailabilities
 }) => {
   const getFuzzyMatchDoctor = (rowNameOrId: string, doctorsList: Doctor[]): Doctor | null => {
     if (!rowNameOrId) return null;
@@ -164,6 +168,187 @@ export const AdminToolbox: React.FC<AdminToolboxProps> = ({
       onNotify(err.message || "Error validando la carpeta", 'error');
     } finally {
       setIsValidatingDrive(false);
+    }
+  };
+
+  const [isSeeding, setIsSeeding] = useState(false);
+
+  const seedRuralAvailabilities = async () => {
+    setIsSeeding(true);
+    try {
+      // 1. Ensure at least 3 active rural doctors exist
+      let ruralDocs = doctors.filter(d => d.cat === 'Rural' && d.st === 'activo');
+      if (ruralDocs.length === 0) {
+        onNotify("Generando médicos rurales de ejemplo en la base de datos...", "info");
+        const sampleRuralDocs = [
+          {
+            id: 101,
+            nombre: "Carlos Andrés",
+            apellidos: "Gómez Montoya",
+            cedula: "1017283491",
+            registroMedico: "RM-94827",
+            email: "carlos.gomez@correohdsa.gov.co",
+            telefono: "3127483921",
+            cat: "Rural" as const,
+            rol: "Médico Rural",
+            st: "activo" as const,
+            username: "carlos.gomez",
+            password: "password123",
+            createdAt: Date.now()
+          },
+          {
+            id: 102,
+            nombre: "Valentina",
+            apellidos: "Restrepo Alzate",
+            cedula: "1020485938",
+            registroMedico: "RM-83748",
+            email: "valentina.restrepo@correohdsa.gov.co",
+            telefono: "3178492049",
+            cat: "Rural" as const,
+            rol: "Médico Rural",
+            st: "activo" as const,
+            username: "valentina.restrepo",
+            password: "password123",
+            createdAt: Date.now()
+          },
+          {
+            id: 103,
+            nombre: "Mateo",
+            apellidos: "Espinosa Castro",
+            cedula: "1032485921",
+            registroMedico: "RM-19482",
+            email: "mateo.espinosa@correohdsa.gov.co",
+            telefono: "3209485731",
+            cat: "Rural" as const,
+            rol: "Médico Rural",
+            st: "activo" as const,
+            username: "mateo.espinosa",
+            password: "password123",
+            createdAt: Date.now()
+          }
+        ];
+
+        for (const docObj of sampleRuralDocs) {
+          await setDoc(doc(db, 'doctors', String(docObj.id)), docObj);
+        }
+        ruralDocs = sampleRuralDocs;
+      }
+
+      // 2. Generate 10 distinct realistic rural availability records for the current selected month/year
+      onNotify("Sincronizando 10 ejemplos con Firebase Firestore...", "info");
+
+      const mockPatients = [
+        { name: "Amalia Sofía Restrepo", id: "1.018.453.921", diag: "Apendicitis aguda con peritonitis localizada (K35.3)", place: "Hospital Universitario San Jorge" },
+        { name: "Emilio José Palacios", id: "1.020.843.111", diag: "Trabajo de parto obstruido debido a presentación podálica (O64.1)", place: "Clínica Comfamiliar" },
+        { name: "María Camila Ortiz", id: "1.037.948.332", diag: "Traumatismo intracraneal no especificado (S06.9)", place: "Hospital San Vicente de Paúl" },
+        { name: "Juan Carlos Giraldo", id: "1.015.483.920", diag: "Crisis asmática severa, estado asmático (J45.9)", place: "Clínica del Café" },
+        { name: "Luciana Beltrán Gómez", id: "1.042.847.219", diag: "Abdomen agudo quirúrgico, colecistitis aguda (K80.0)", place: "Hospital Departamental de Cartago" },
+        { name: "Samuel Eduardo Muñoz", id: "1.033.485.922", diag: "Fractura de fémur expuesta grado II (S72.0)", place: "Hospital Universitario San Jorge" },
+        { name: "Gabriela Torres Prada", id: "1.012.948.330", diag: "Preeclampsia severa con signos de severidad (O14.1)", place: "Clínica Comfamiliar" },
+        { name: "Jerónimo Ruiz Salazar", id: "1.022.483.741", diag: "Hemorragia digestiva alta de origen no especificado (K92.2)", place: "Hospital San Vicente de Paúl" },
+        { name: "Salomé Castro Velez", id: "1.039.485.201", diag: "Neumonía adquirida en comunidad con insuficiencia respiratoria (J18.9)", place: "Clínica del Café" },
+        { name: "Tomás Henao Restrepo", id: "1.016.942.847", diag: "Infarto agudo de miocardio con elevación del segmento ST (I21.1)", place: "Hospital Universitario San Jorge" }
+      ];
+
+      const mockActivities = [
+        "Acompañamiento en ambulancia de soporte vital básico por remisión de urgencia.",
+        "Remisión y monitoreo continuo de paciente inestable en ambulancia medicalizada.",
+        "Acompañamiento médico para valoración por especialista en tercer nivel.",
+        "Traslado de paciente pediátrico con dificultad respiratoria severa.",
+        "Acompañamiento de paciente obstétrica en código rojo por hemorragia posparto.",
+        "Traslado y soporte de paciente politraumatizado en ambulancia básica.",
+        "Remisión urgente para intervención neuroquirúrgica prioritaria.",
+        "Acompañamiento y soporte hemodinámico durante traslado de urgencias.",
+        "Remisión urgente por sospecha de patología quirúrgica abdominal.",
+        "Soporte y reanimación básica durante traslado interinstitucional de urgencias."
+      ];
+
+      const coordinators = [
+        { id: 1, name: "Dr. Alejandro Restrepo (Coordinador)" },
+        { id: 2, name: "Dra. Liliana Gómez (Jefe Urgencias)" }
+      ];
+
+      // Clean sample base64 signatures for realistic render
+      const mockSignature = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAKAAAABACAYAAABfIq9vAAAAAXNSR0IArs4c6QAAAAlwSFlzAAALEwAACxMBAJqcGAAAAWJJREFUeNrt2TFLw0AcBvDjvSAtCDp0dGsdVfAFFAVBpIOOOnRRFDqIDoIurvofXBT8BEVxd3ETuhSc/B4XpC9Z8iX3XpJLcl8IhEtyeZcLyR2HAAAAAAAAAAAAAAAAAAAAAAAAAAAAn9Z03H+7bOeeYx3H8Qy9M1s43S3rLut71t6W030A91V6W7Zyz8N9FwBcR3pb9vO3rLctp6e5p7ln7jMAvK/S27LXv2V9Yjm9vby3HMcBvF96Wzb6b/9uNf/NfdZyHHf9M6U78b8H4P0q3TPrW6v5L/eK5byO/H+pSg9gO+nO/C8BeK9K986bWc0Z6/XFp3bOfTf/fQDvU3q99UmsZp/15fX94GvT/VunpwcAngcA7vUvW1ms5qF16X1Sby89p/sA7vUvG8xqznOfXnvGcgAAAAA=";
+
+      // Ensure some spread of days
+      const days = [2, 5, 8, 12, 15, 18, 20, 22, 25, 28];
+
+      for (let i = 0; i < 10; i++) {
+        const docObj = ruralDocs[i % ruralDocs.length];
+        const patient = mockPatients[i];
+        const activity = mockActivities[i];
+        const coordinator = coordinators[i % coordinators.length];
+        
+        const day = days[i];
+        
+        // Setup realistic start/end times
+        const callHour = 8 + (i * 2) % 12; // ranges from 08:00 to 20:00
+        const durationHours = 4 + (i * 3) % 6; // ranges from 4 to 9 hours
+        
+        const callDateStr = `${selectedYear}-${String(selectedMonth + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+        const callTimeStr = `${String(callHour).padStart(2, '0')}:00`;
+        
+        const endHour = callHour + durationHours;
+        const endDay = endHour >= 24 ? day + 1 : day;
+        const formattedEndHour = endHour % 24;
+        
+        const endDateStr = `${selectedYear}-${String(selectedMonth + 1).padStart(2, '0')}-${String(endDay).padStart(2, '0')}`;
+        const endTimeStr = `${String(formattedEndHour).padStart(2, '0')}:00`;
+        
+        const start = new Date(`${callDateStr}T${callTimeStr}`);
+        const end = new Date(`${endDateStr}T${endTimeStr}`);
+
+        const id = `seed-${Date.now()}-${i}`;
+        const gross = durationHours;
+        const ded = (i % 4 === 0) ? 1.5 : 0; // Some have deduction due to schedule overlap
+        const net = gross - ded;
+
+        const record: RuralAvailability = {
+          id,
+          doctorId: docObj.id,
+          doctorName: docObj.nombre + " " + (docObj.apellidos || ""),
+          callDateTime: start.getTime(),
+          hospitalArrivalTime: `${String(callHour).padStart(2, '0')}:15`,
+          activity: `TRASLADO: ${activity}`,
+          patientName: patient.name,
+          patientId: patient.id,
+          diagnosis: patient.diag,
+          acceptancePlace: patient.place,
+          calledBy: coordinator.name,
+          calledById: coordinator.id,
+          terminationDateTime: end.getTime(),
+          totalHours: gross,
+          timestamp: Date.now() - (10 - i) * 60000,
+          targetMonth: selectedMonth,
+          targetYear: selectedYear,
+          authorizedStatus: i % 2 === 0 ? 'signed' : 'pending',
+          authorizerSignature: i % 2 === 0 ? mockSignature : undefined,
+          authorizedTimestamp: i % 2 === 0 ? Date.now() : undefined,
+          
+          activityType: 'TRASLADO',
+          textLibre: activity,
+          callDate: callDateStr,
+          callTime: callTimeStr,
+          endDate: endDateStr,
+          endTime: endTimeStr,
+          grossHours: gross,
+          deduction: ded,
+          netHours: net
+        };
+
+        await setDoc(doc(db, 'ruralAvailability', id), record);
+      }
+
+      onNotify("¡Se han generado exitosamente 10 ejemplos realistas de disponibilidad rural!", "success");
+      setTimeout(() => {
+        window.location.reload();
+      }, 1500);
+    } catch (err: any) {
+      console.error(err);
+      onNotify("Error al generar los ejemplos: " + (err.message || String(err)), "error");
+    } finally {
+      setIsSeeding(false);
     }
   };
 
@@ -548,6 +733,138 @@ export const AdminToolbox: React.FC<AdminToolboxProps> = ({
               <input type="file" className="hidden" accept=".xlsx,.xls" onChange={(e) => handleFileUpload(e, 'siglas')} />
             </label>
            </div>
+         </div>
+       </div>
+
+      {/* SEED DATA FOR RURAL AVAILABILITY */}
+      <div className="bg-white rounded-[32px] p-8 border border-emerald-100 shadow-xl mt-8">
+        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-6">
+          <div className="flex items-center gap-4">
+            <div className="p-4 bg-emerald-50 rounded-2xl text-emerald-600">
+               <Database className="w-8 h-8" />
+            </div>
+            <div>
+              <h3 className="text-2xl font-black text-slate-800 tracking-tight">DATOS DE PRUEBA (SEED DATA)</h3>
+              <p className="text-[10px] text-emerald-600 font-bold uppercase tracking-widest font-mono">Cargar Ejemplos para Pruebas del Administrador</p>
+            </div>
+          </div>
+          <button
+            onClick={seedRuralAvailabilities}
+            disabled={isSeeding}
+            className="w-full sm:w-auto bg-emerald-600 hover:bg-emerald-700 text-white font-black px-6 py-4 rounded-2xl transition-all shadow-xl shadow-emerald-500/20 uppercase tracking-widest text-xs flex items-center justify-center gap-3 disabled:opacity-50"
+          >
+            {isSeeding ? (
+              <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+            ) : (
+              <Sparkles className="w-5 h-5" />
+            )}
+            GENERAR 10 EJEMPLOS RURALES
+          </button>
+        </div>
+        <p className="text-xs text-slate-500 mt-4 leading-relaxed">
+          Este módulo creará automáticamente <strong>10 registros reales y consistentes de disponibilidades médicas rurales</strong> en Firebase Firestore para el mes seleccionado. Si no existen médicos rurales activos en la base de datos, el sistema creará automáticamente 3 médicos rurales de ejemplo de forma segura.
+        </p>
+      </div>
+
+      {/* DATA QUALITY REPORT TABLE */}
+      <div className="bg-white rounded-[32px] p-8 border border-rose-100 shadow-xl mt-8">
+        <div className="flex items-center gap-4 mb-8">
+          <div className="p-4 bg-rose-50 rounded-2xl text-rose-600">
+             <AlertTriangle className="w-8 h-8" />
+          </div>
+          <div>
+            <h3 className="text-2xl font-black text-slate-800 tracking-tight">DATA QUALITY REPORT</h3>
+            <p className="text-[10px] text-rose-600 font-bold uppercase tracking-widest font-mono">Registros de Disponibilidad Rural Incompletos o Inconsistentes</p>
+          </div>
+        </div>
+
+        {(() => {
+          const incompleteRecords = ruralAvailabilities
+            .filter(r => r.targetMonth === selectedMonth && r.targetYear === selectedYear)
+            .map(r => {
+              const missing: string[] = [];
+              if (!r.patientName || r.patientName.trim() === "") missing.push("Paciente");
+              if (!r.patientId || r.patientId.trim() === "") missing.push("Cédula/Documento");
+              if (!r.diagnosis || r.diagnosis.trim() === "") missing.push("Diagnóstico");
+              if (!r.acceptancePlace || r.acceptancePlace.trim() === "") missing.push("Lugar Aceptación");
+              
+              const activityVal = (r.activityType || '') + (r.textLibre || '') + (r.activity || '');
+              if (!activityVal || activityVal.trim() === "") {
+                missing.push("Actividad");
+              }
+
+              if (!r.calledById) {
+                missing.push("Autorizador");
+              }
+
+              return {
+                ...r,
+                missingFields: missing,
+                isValid: missing.length === 0
+              };
+            })
+            .filter(item => !item.isValid);
+
+          if (incompleteRecords.length === 0) {
+            return (
+              <div className="p-6 bg-emerald-50 border border-emerald-100 rounded-2xl text-center text-emerald-800">
+                <p className="font-bold flex items-center justify-center gap-2">
+                  🎉 ¡Enhorabuena! Todos los registros del mes están 100% completos y consistentes.
+                </p>
+                <p className="text-[10px] text-emerald-600 uppercase font-black mt-1">
+                  Ningún registro rural presenta campos incompletos para {new Date(selectedYear, selectedMonth).toLocaleString('es', { month: 'long', year: 'numeric' })}.
+                </p>
+              </div>
+            );
+          }
+
+          return (
+            <div className="space-y-4">
+              <div className="p-4 bg-rose-50 border border-rose-100 rounded-2xl text-rose-800 text-xs">
+                ⚠️ Se han detectado <strong>{incompleteRecords.length}</strong> registros con campos obligatorios vacíos para el mes actual. Estos registros deben corregirse en la base de datos para asegurar el correcto consolidado.
+              </div>
+              
+              <div className="overflow-x-auto rounded-2xl border border-slate-100 shadow-sm">
+                <table className="w-full text-left border-collapse text-xs">
+                  <thead>
+                    <tr className="bg-slate-50 border-b border-slate-100 text-slate-500 font-extrabold uppercase text-[10px]">
+                      <th className="p-4">ID / Médico</th>
+                      <th className="p-4">Fecha</th>
+                      <th className="p-4">Paciente</th>
+                      <th className="p-4 text-rose-600">Campos Faltantes</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-50">
+                    {incompleteRecords.map(item => (
+                      <tr key={item.id} className="hover:bg-slate-50/50 transition-colors">
+                        <td className="p-4 font-bold text-slate-700">
+                          <span className="text-[10px] text-slate-400 font-mono block">ID: {item.id}</span>
+                          Dr(a). {item.doctorName}
+                        </td>
+                        <td className="p-4 text-slate-500 font-mono">
+                          {item.callDate || new Date(item.callDateTime).toLocaleDateString()}
+                        </td>
+                        <td className="p-4 text-slate-600">
+                          {item.patientName || <span className="text-rose-500 italic">No registrado</span>}
+                        </td>
+                        <td className="p-4">
+                          <div className="flex flex-wrap gap-1.5">
+                            {item.missingFields.map((field, fIdx) => (
+                              <span key={fIdx} className="bg-rose-50 text-rose-700 border border-rose-100 px-2 py-0.5 rounded-full font-bold text-[10px] tracking-tight uppercase">
+                                ⚠️ {field}
+                              </span>
+                            ))}
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          );
+        })()}
+      </div>
         </div>
       </div>
     </div>
