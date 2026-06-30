@@ -480,6 +480,7 @@ export default function App() {
   const [ruralActivityType, setRuralActivityType] = useState('Traslado / Disponibilidad');
   const [ruralSelectedDoctorId, setRuralSelectedDoctorId] = useState('');
   const [ruralViewMode, setRuralViewMode] = useState<'table' | 'cards'>('table');
+  const [isSeedingRural, setIsSeedingRural] = useState(false);
   const [signingAvailability, setSigningAvailability] = useState<RuralAvailability | null>(null);
   const [showVerifyModal, setShowVerifyModal] = useState(false);
   const [emergencyConfig, setEmergencyConfig] = useState<{ rojoRoles: string[], azulRoles: string[] }>({
@@ -2024,7 +2025,8 @@ Donde doctorId es el ID numérico del médico y las llaves de los días son del 
         "DEDUCCIÓN",
         "HORAS NETAS (RURAL)",
         "HORAS TURNERO",
-        "CONSOLIDADO TOTAL (MES)"
+        "CONSOLIDADO TOTAL (MES)",
+        "ESTADO AUTORIZACIÓN"
       ];
       
       const values = [header];
@@ -2054,7 +2056,8 @@ Donde doctorId es el ID numérico del médico y las llaves de los días son del 
           r.deduction !== undefined ? r.deduction : 0,
           r.netHours !== undefined ? r.netHours : (r.totalHours || 0),
           docTurnero,
-          consolidated
+          consolidated,
+          r.authorizedStatus === 'signed' ? 'AUTORIZADO Y FIRMADO' : 'PENDIENTE'
         ] as any[]);
       });
 
@@ -2214,6 +2217,182 @@ Donde doctorId es el ID numérico del médico y las llaves de los días son del 
       setTimeout(() => setNotification(null), 3000);
     } catch (err) {
       handleFirestoreError(err, OperationType.WRITE, `ruralAvailability/${id}`);
+    }
+  };
+
+  const seedRuralAvailabilities = async () => {
+    setIsSeedingRural(true);
+    try {
+      // 1. Ensure at least 3 active rural doctors exist
+      let ruralDocs = doctors.filter(d => d.cat === 'Rural' && d.st === 'activo');
+      if (ruralDocs.length === 0) {
+        setNotification({ message: "Generando médicos rurales de ejemplo...", type: 'info' });
+        const sampleRuralDocs = [
+          {
+            id: 101,
+            nombre: "Carlos Andrés",
+            apellidos: "Gómez Montoya",
+            cedula: "1017283491",
+            registroMedico: "RM-94827",
+            email: "carlos.gomez@correohdsa.gov.co",
+            telefono: "3127483921",
+            cat: "Rural" as const,
+            rol: "Médico Rural" as const,
+            st: "activo" as const,
+            username: "carlos.gomez",
+            password: "password123",
+            createdAt: Date.now()
+          },
+          {
+            id: 102,
+            nombre: "Valentina",
+            apellidos: "Restrepo Alzate",
+            cedula: "1020485938",
+            registroMedico: "RM-83748",
+            email: "valentina.restrepo@correohdsa.gov.co",
+            telefono: "3178492049",
+            cat: "Rural" as const,
+            rol: "Médico Rural" as const,
+            st: "activo" as const,
+            username: "valentina.restrepo",
+            password: "password123",
+            createdAt: Date.now()
+          },
+          {
+            id: 103,
+            nombre: "Mateo",
+            apellidos: "Espinosa Castro",
+            cedula: "1032485921",
+            registroMedico: "RM-19482",
+            email: "mateo.espinosa@correohdsa.gov.co",
+            telefono: "3209485731",
+            cat: "Rural" as const,
+            rol: "Médico Rural" as const,
+            st: "activo" as const,
+            username: "mateo.espinosa",
+            password: "password123",
+            createdAt: Date.now()
+          }
+        ];
+
+        for (const docObj of sampleRuralDocs) {
+          await setDoc(doc(db, 'doctors', String(docObj.id)), docObj);
+        }
+        ruralDocs = sampleRuralDocs;
+      }
+
+      setNotification({ message: "Sincronizando 10 ejemplos con Firestore...", type: 'info' });
+
+      const mockPatients = [
+        { name: "Amalia Sofía Restrepo", id: "1.018.453.921", diag: "Apendicitis aguda con peritonitis localizada (K35.3)", place: "Hospital Universitario San Jorge" },
+        { name: "Emilio José Palacios", id: "1.020.843.111", diag: "Trabajo de parto obstruido debido a presentación podálica (O64.1)", place: "Clínica Comfamiliar" },
+        { name: "María Camila Ortiz", id: "1.037.948.332", diag: "Traumatismo intracraneal no especificado (S06.9)", place: "Hospital San Vicente de Paúl" },
+        { name: "Juan Carlos Giraldo", id: "1.015.483.920", diag: "Crisis asmática severa, estado asmático (J45.9)", place: "Clínica del Café" },
+        { name: "Luciana Beltrán Gómez", id: "1.042.847.219", diag: "Abdomen agudo quirúrgico, colecistitis aguda (K80.0)", place: "Hospital Departamental de Cartago" },
+        { name: "Samuel Eduardo Muñoz", id: "1.033.485.922", diag: "Fractura de fémur expuesta grado II (S72.0)", place: "Hospital Universitario San Jorge" },
+        { name: "Gabriela Torres Prada", id: "1.012.948.330", diag: "Preeclampsia severa con signos de severidad (O14.1)", place: "Clínica Comfamiliar" },
+        { name: "Jerónimo Ruiz Salazar", id: "1.022.483.741", diag: "Hemorragia digestiva alta de origen no especificado (K92.2)", place: "Hospital San Vicente de Paúl" },
+        { name: "Salomé Castro Velez", id: "1.039.485.201", diag: "Neumonía adquirida en comunidad con insuficiencia respiratoria (J18.9)", place: "Clínica del Café" },
+        { name: "Tomás Henao Restrepo", id: "1.016.942.847", diag: "Infarto agudo de miocardio con elevación del segmento ST (I21.1)", place: "Hospital Universitario San Jorge" }
+      ];
+
+      const mockActivities = [
+        "Acompañamiento en ambulancia de soporte vital básico por remisión de urgencia.",
+        "Remisión y monitoreo continuo de paciente inestable en ambulancia medicalizada.",
+        "Acompañamiento médico para valoración por especialista en tercer nivel.",
+        "Traslado de paciente pediátrico con dificultad respiratoria severa.",
+        "Acompañamiento de paciente obstétrica en código rojo por hemorragia posparto.",
+        "Traslado y soporte de paciente politraumatizado en ambulancia básica.",
+        "Remisión urgente para intervención neuroquirúrgica prioritaria.",
+        "Acompañamiento y soporte hemodinámico durante traslado de urgencias.",
+        "Remisión urgente por sospecha de patología quirúrgica abdominal.",
+        "Soporte y reanimación básica durante traslado interinstitucional de urgencias."
+      ];
+
+      const coordinators = [
+        { id: 1, name: "Dr. Alejandro Restrepo (Coordinador)" },
+        { id: 2, name: "Dra. Liliana Gómez (Jefe Urgencias)" }
+      ];
+
+      const mockSignature = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAKAAAABACAYAAABfIq9vAAAAAXNSR0IArs4c6QAAAAlwSFlzAAALEwAACxMBAJqcGAAAAWJJREFUeNrt2TFLw0AcBvDjvSAtCDp0dGsdVfAFFAVBpIOOOnRRFDqIDoIurvofXBT8BEVxd3ETuhSc/B4XpC9Z8iX3XpJLcl8IhEtyeZcLyR2HAAAAAAAAAAAAAAAAAAAAAAAAAAAAn9Z03H+7bOeeYx3H8Qy9M1s43S3rLut71t6W030A91V6W7Zyz8N9FwBcR3pb9vO3rLctp6e5p7ln7jMAvK/S27LXv2V9Yjm9vby3HMcBvF96Wzb6b/9uNf/NfdZyHHf9M6U78b8H4P0q3TPrW6v5L/eK5byO/H+pSg9gO+nO/C8BeK9K986bWc0Z6/XFp3bOfTf/fQDvU3q99UmsZp/15fX94GvT/VunpwcAngcA7vUvW1ms5qF16X1Sby89p/sA7vUvG8xqznOfXnvGcgAAAAA=";
+
+      const days = [2, 5, 8, 12, 15, 18, 20, 22, 25, 28];
+
+      for (let i = 0; i < 10; i++) {
+        const docObj = ruralDocs[i % ruralDocs.length];
+        const patient = mockPatients[i];
+        const activity = mockActivities[i];
+        const coordinator = coordinators[i % coordinators.length];
+        
+        const day = days[i];
+        const callHour = 8 + (i * 2) % 12;
+        const durationHours = 4 + (i * 3) % 6;
+        
+        const callDateStr = `${selectedYear}-${String(selectedMonth + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+        const callTimeStr = `${String(callHour).padStart(2, '0')}:00`;
+        
+        const endHour = callHour + durationHours;
+        const endDay = endHour >= 24 ? day + 1 : day;
+        const formattedEndHour = endHour % 24;
+        
+        const endDateStr = `${selectedYear}-${String(selectedMonth + 1).padStart(2, '0')}-${String(endDay).padStart(2, '0')}`;
+        const endTimeStr = `${String(formattedEndHour).padStart(2, '0')}:00`;
+        
+        const start = new Date(`${callDateStr}T${callTimeStr}`);
+        const end = new Date(`${endDateStr}T${endTimeStr}`);
+
+        const id = `seed-${Date.now()}-${i}`;
+        const gross = durationHours;
+        const ded = (i % 4 === 0) ? 1.5 : 0;
+        const net = gross - ded;
+
+        const record: RuralAvailability = {
+          id,
+          doctorId: docObj.id,
+          doctorName: docObj.nombre + " " + (docObj.apellidos || ""),
+          callDateTime: start.getTime(),
+          hospitalArrivalTime: `${String(callHour).padStart(2, '0')}:15`,
+          activity: `TRASLADO: ${activity}`,
+          patientName: patient.name,
+          patientId: patient.id,
+          diagnosis: patient.diag,
+          acceptancePlace: patient.place,
+          calledBy: coordinator.name,
+          calledById: coordinator.id,
+          terminationDateTime: end.getTime(),
+          totalHours: gross,
+          timestamp: Date.now() - (10 - i) * 60000,
+          targetMonth: selectedMonth,
+          targetYear: selectedYear,
+          authorizedStatus: i % 2 === 0 ? 'signed' : 'pending',
+          authorizerSignature: i % 2 === 0 ? mockSignature : undefined,
+          authorizedTimestamp: i % 2 === 0 ? Date.now() : undefined,
+          
+          activityType: 'TRASLADO',
+          textLibre: activity,
+          callDate: callDateStr,
+          callTime: callTimeStr,
+          endDate: endDateStr,
+          endTime: endTimeStr,
+          grossHours: gross,
+          deduction: ded,
+          netHours: net
+        };
+
+        const cleanRecord = Object.fromEntries(
+          Object.entries(record).filter(([_, v]) => v !== undefined)
+        );
+
+        await setDoc(doc(db, 'ruralAvailability', id), cleanRecord);
+      }
+
+      setNotification({ message: "¡Se han generado exitosamente 10 ejemplos realistas!", type: 'success' });
+      setTimeout(() => setNotification(null), 3000);
+    } catch (err: any) {
+      console.error(err);
+      setNotification({ message: "Error al generar ejemplos: " + err.message, type: 'error' });
+    } finally {
+      setIsSeedingRural(false);
     }
   };
 
@@ -4858,9 +5037,9 @@ Usa un tono directivo, formal y conciso en español. Solo usa negritas y viñeta
             {[
               { id: 'home', label: 'Dashboard', icon: ChevronRight },
               { id: 'turnos', label: 'Turnero Hospitalario', icon: Calendar },
+              { id: 'rural', label: 'Disponibilidades Rurales', icon: MapPin },
               { id: 'calendario-test', label: 'Mi Calendario', icon: Calendar },
               { id: 'census', label: 'Censo Hospitalario', icon: ClipboardList },
-              { id: 'rural', label: 'Disponibilidades Rurales', icon: MapPin },
               { id: 'committee', label: 'Comité H.C.', icon: FileCheck },
               { id: 'pic', label: 'Capacitaciones (PIC)', icon: BrainCircuit },
               { id: 'solicitudes', label: 'Solicitudes', icon: Send },
@@ -6985,193 +7164,217 @@ Usa un tono directivo, formal y conciso en español. Solo usa negritas y viñeta
                        </button>
                        <h3 className="hidden">
                       </h3>
-                      {ruralViewMode === 'table' ? (
-                        <div className="overflow-x-auto rounded-2xl border border-slate-200 shadow-sm">
-                          <table className="w-full text-left border-collapse text-xs">
-                            <thead>
-                              <tr className="bg-slate-50 text-slate-600 uppercase font-bold border-b border-slate-200 text-[10px] tracking-wider">
-                                <th className="p-4 text-center">No.</th>
-                                <th className="p-4">Médico</th>
-                                <th className="p-4">Fecha</th>
-                                <th className="p-4">Ingreso / Egreso</th>
-                                <th className="p-4 text-center">H. Brutas</th>
-                                <th className="p-4 text-center">Deducción</th>
-                                <th className="p-4 text-center font-bold text-emerald-700 bg-emerald-50/50">H. Efectivas</th>
-                                <th className="p-4">Paciente (ID)</th>
-                                <th className="p-4">Diagnóstico / Destino</th>
-                                <th className="p-4">Actividad</th>
-                                <th className="p-4">Autorización</th>
-                                <th className="p-4 text-center">Acciones</th>
-                              </tr>
-                            </thead>
-                            <tbody className="divide-y divide-slate-100">
-                              {ruralAvailabilities
-                                .filter(r => (isAdminUser ? true : r.doctorId === session?.doctorId))
-                                .filter(r => r.targetMonth === selectedMonth && r.targetYear === selectedYear)
-                                .sort((a,b) => b.callDateTime - a.callDateTime)
-                                .map((r, index, arr) => {
-                                  const start = new Date(r.callDateTime);
-                                  const end = new Date(r.terminationDateTime);
-                                  const gross = r.grossHours !== undefined ? r.grossHours : r.totalHours;
-                                  const ded = r.deduction !== undefined ? r.deduction : 0;
-                                  const net = r.netHours !== undefined ? r.netHours : r.totalHours;
+                      {(() => {
+                        const filteredAvails = ruralAvailabilities
+                          .filter(r => (isAdminUser ? true : r.doctorId === session?.doctorId))
+                          .filter(r => r.targetMonth === selectedMonth && r.targetYear === selectedYear);
 
-                                  return (
-                                    <tr key={r.id} className="hover:bg-slate-50/80 transition-all">
-                                      <td className="p-4 text-center font-mono text-slate-400 font-bold">{arr.length - index}</td>
-                                      <td className="p-4 font-bold text-slate-800">{r.doctorName}</td>
-                                      <td className="p-4 font-mono text-slate-600 whitespace-nowrap">{start.toLocaleDateString()}</td>
-                                      <td className="p-4 text-slate-500 whitespace-nowrap font-mono text-[10px]">
-                                        <div>In: {start.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'})}</div>
-                                        <div>Out: {end.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'})}</div>
-                                      </td>
-                                      <td className="p-4 text-center font-mono font-bold text-slate-600">{gross.toFixed(1)}h</td>
-                                      <td className="p-4 text-center font-mono font-bold text-rose-500">{ded > 0 ? `-${ded.toFixed(1)}h` : '-'}</td>
-                                      <td className="p-4 text-center font-mono font-black text-emerald-700 bg-emerald-50/40 text-sm">
-                                        <div>{net.toFixed(1)}h</div>
-                                        {/* Daily breakdown of effective hours */}
-                                        {(() => {
-                                          const daysBreakdown = getDailyRuralBreakdown(r);
-                                          if (daysBreakdown.length > 1) {
-                                            return (
-                                              <div className="mt-1.5 flex flex-col gap-0.5 text-[9px] text-slate-500 border-t border-emerald-100/60 pt-1 font-normal">
-                                                {daysBreakdown.map((bd, bi) => (
-                                                  <div key={bi} className="flex justify-between gap-1.5 whitespace-nowrap bg-white/40 px-1 py-0.5 rounded border border-emerald-50/30">
-                                                    <span className="text-slate-400">Día {bd.dayNum}:</span>
-                                                    <span className="font-bold text-emerald-600">{bd.netHours.toFixed(1)}h</span>
-                                                  </div>
-                                                ))}
-                                              </div>
-                                            );
-                                          }
-                                          return null;
-                                        })()}
-                                      </td>
-                                      <td className="p-4 text-slate-600">
-                                        <div className="font-bold">{r.patientName}</div>
-                                        <div className="text-[10px] text-slate-400 font-mono">ID: {r.patientId || 'N/A'}</div>
-                                      </td>
-                                      <td className="p-4 text-slate-600 max-w-[180px] truncate" title={`${r.diagnosis || ''} -> ${r.acceptancePlace || ''}`}>
-                                        <div className="font-medium truncate">Diag: {r.diagnosis || 'N/A'}</div>
-                                        <div className="text-[10px] text-slate-400 font-mono truncate">Dest: {r.acceptancePlace || 'N/A'}</div>
-                                      </td>
-                                      <td className="p-4 text-slate-500 font-medium italic max-w-[150px] truncate" title={r.activity}>
-                                        {r.activity}
-                                      </td>
-                                      <td className="p-4">
-                                        {r.authorizedStatus === 'signed' ? (
-                                          <div className="flex flex-col gap-1">
-                                            <span className="text-[9px] bg-emerald-100 text-emerald-800 px-1.5 py-0.5 rounded font-bold w-fit">
-                                              ✔️ {r.calledBy}
+                        if (filteredAvails.length === 0) {
+                          return (
+                            <div className="flex flex-col items-center justify-center py-16 px-4 bg-slate-50 border border-dashed border-slate-200 rounded-[24px] text-center shadow-inner">
+                              <span className="text-4xl mb-4 animate-bounce">📅</span>
+                              <h4 className="text-sm font-bold text-slate-700 uppercase tracking-wider">Sin Registros de Disponibilidad</h4>
+                              <p className="text-xs text-slate-500 mt-2 max-w-md">No se han registrado disponibilidades de médicos rurales para este mes.</p>
+                              {isAdminUser && (
+                                <button
+                                  onClick={seedRuralAvailabilities}
+                                  disabled={isSeedingRural}
+                                  className="mt-5 bg-emerald-600 hover:bg-emerald-700 text-white font-black px-6 py-3 rounded-xl text-xs uppercase tracking-wider transition-all shadow-md shadow-emerald-500/10 flex items-center gap-2 disabled:opacity-50"
+                                >
+                                  {isSeedingRural ? (
+                                    <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                                  ) : (
+                                    <span>🌟 Generar 10 Ejemplos de Prueba</span>
+                                  )}
+                                </button>
+                              )}
+                            </div>
+                          );
+                        }
+
+                        return ruralViewMode === 'table' ? (
+                          <div className="overflow-x-auto rounded-2xl border border-slate-200 shadow-sm">
+                            <table className="w-full text-left border-collapse text-xs">
+                              <thead>
+                                <tr className="bg-slate-50 text-slate-600 uppercase font-bold border-b border-slate-200 text-[10px] tracking-wider">
+                                  <th className="p-4 text-center">No.</th>
+                                  <th className="p-4">Médico</th>
+                                  <th className="p-4">Fecha</th>
+                                  <th className="p-4">Ingreso / Egreso</th>
+                                  <th className="p-4 text-center">H. Brutas</th>
+                                  <th className="p-4 text-center">Deducción</th>
+                                  <th className="p-4 text-center font-bold text-emerald-700 bg-emerald-50/50">H. Efectivas</th>
+                                  <th className="p-4">Paciente (ID)</th>
+                                  <th className="p-4">Diagnóstico / Destino</th>
+                                  <th className="p-4">Actividad</th>
+                                  <th className="p-4">Autorización</th>
+                                  <th className="p-4 text-center">Acciones</th>
+                                </tr>
+                              </thead>
+                              <tbody className="divide-y divide-slate-100">
+                                {[...filteredAvails]
+                                  .sort((a,b) => b.callDateTime - a.callDateTime)
+                                  .map((r, index, arr) => {
+                                    const start = new Date(r.callDateTime);
+                                    const end = new Date(r.terminationDateTime);
+                                    const gross = r.grossHours !== undefined ? r.grossHours : r.totalHours;
+                                    const ded = r.deduction !== undefined ? r.deduction : 0;
+                                    const net = r.netHours !== undefined ? r.netHours : r.totalHours;
+
+                                    return (
+                                      <tr key={r.id} className="hover:bg-slate-50/80 transition-all">
+                                        <td className="p-4 text-center font-mono text-slate-400 font-bold">{arr.length - index}</td>
+                                        <td className="p-4 font-bold text-slate-800">{r.doctorName}</td>
+                                        <td className="p-4 font-mono text-slate-600 whitespace-nowrap">{start.toLocaleDateString()}</td>
+                                        <td className="p-4 text-slate-500 whitespace-nowrap font-mono text-[10px]">
+                                          <div>In: {start.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'})}</div>
+                                          <div>Out: {end.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'})}</div>
+                                        </td>
+                                        <td className="p-4 text-center font-mono font-bold text-slate-600">{gross.toFixed(1)}h</td>
+                                        <td className="p-4 text-center font-mono font-bold text-rose-500">{ded > 0 ? `-${ded.toFixed(1)}h` : '-'}</td>
+                                        <td className="p-4 text-center font-mono font-black text-emerald-700 bg-emerald-50/40 text-sm">
+                                          <div>{net.toFixed(1)}h</div>
+                                          {/* Daily breakdown of effective hours */}
+                                          {(() => {
+                                            const daysBreakdown = getDailyRuralBreakdown(r);
+                                            if (daysBreakdown.length > 1) {
+                                              return (
+                                                <div className="mt-1.5 flex flex-col gap-0.5 text-[9px] text-slate-500 border-t border-emerald-100/60 pt-1 font-normal">
+                                                  {daysBreakdown.map((bd, bi) => (
+                                                    <div key={bi} className="flex justify-between gap-1.5 whitespace-nowrap bg-white/40 px-1 py-0.5 rounded border border-emerald-50/30">
+                                                      <span className="text-slate-400">Día {bd.dayNum}:</span>
+                                                      <span className="font-bold text-emerald-600">{bd.netHours.toFixed(1)}h</span>
+                                                    </div>
+                                                  ))}
+                                                </div>
+                                              );
+                                            }
+                                            return null;
+                                          })()}
+                                        </td>
+                                        <td className="p-4 text-slate-600">
+                                          <div className="font-bold">{r.patientName}</div>
+                                          <div className="text-[10px] text-slate-400 font-mono">ID: {r.patientId || 'N/A'}</div>
+                                        </td>
+                                        <td className="p-4 text-slate-600 max-w-[180px] truncate" title={`${r.diagnosis || ''} -> ${r.acceptancePlace || ''}`}>
+                                          <div className="font-medium truncate">Diag: {r.diagnosis || 'N/A'}</div>
+                                          <div className="text-[10px] text-slate-400 font-mono truncate">Dest: {r.acceptancePlace || 'N/A'}</div>
+                                        </td>
+                                        <td className="p-4 text-slate-500 font-medium italic max-w-[150px] truncate" title={r.activity}>
+                                          {r.activity}
+                                        </td>
+                                        <td className="p-4">
+                                          {r.authorizedStatus === 'signed' ? (
+                                            <div className="flex flex-col gap-1">
+                                              <span className="text-[9px] bg-emerald-100 text-emerald-800 px-1.5 py-0.5 rounded font-bold w-fit">
+                                                ✔️ {r.calledBy}
+                                              </span>
+                                              {r.authorizerSignature && (
+                                                <img src={r.authorizerSignature} alt="Firma" className="h-5 w-auto object-contain bg-white border border-slate-100 rounded" />
+                                              )}
+                                            </div>
+                                          ) : (
+                                            <span className="text-[9px] bg-amber-100 text-amber-800 px-1.5 py-0.5 rounded font-bold whitespace-nowrap">
+                                              ⏳ Pendiente ({r.calledBy})
                                             </span>
-                                            {r.authorizerSignature && (
-                                              <img src={r.authorizerSignature} alt="Firma" className="h-5 w-auto object-contain bg-white border border-slate-100 rounded" />
+                                          )}
+                                        </td>
+                                        <td className="p-4">
+                                          <div className="flex items-center justify-center gap-1">
+                                            <button
+                                              onClick={() => exportRuralAvailabilityPDF(r)}
+                                              className="p-1.5 bg-sky-50 text-sky-600 rounded-lg hover:bg-sky-500 hover:text-white transition-all"
+                                              title="Exportar Reporte PDF"
+                                            >
+                                              <FileDown className="w-3.5 h-3.5" />
+                                            </button>
+                                            {isAdminUser && (
+                                              <button 
+                                                onClick={async () => {
+                                                  if(confirm("¿Eliminar este registro?")) {
+                                                    await deleteDoc(doc(db, 'ruralAvailability', r.id));
+                                                  }
+                                                }}
+                                                className="p-1.5 bg-rose-50 text-rose-500 rounded-lg hover:bg-rose-500 hover:text-white transition-all"
+                                                title="Eliminar registro"
+                                              >
+                                                <Trash2 className="w-3.5 h-3.5" />
+                                              </button>
                                             )}
                                           </div>
+                                        </td>
+                                      </tr>
+                                    );
+                                  })}
+                              </tbody>
+                            </table>
+                          </div>
+                        ) : (
+                          <div className="space-y-4">
+                            {[...filteredAvails]
+                              .sort((a,b) => b.callDateTime - a.callDateTime)
+                              .map(r => (
+                                <div key={r.id} className="bg-slate-50 p-5 rounded-2xl border border-slate-200 flex flex-wrap justify-between items-center gap-4 group hover:border-emerald-500/40 transition-all">
+                                  <div>
+                                    <div className="flex items-center gap-2 mb-1">
+                                      <span className="font-bold text-slate-800 uppercase text-sm"> paciente: {r.patientName}</span>
+                                      <span className="text-[10px] bg-emerald-100 text-emerald-700 px-2 py-0.5 rounded font-black border border-emerald-200">{r.totalHours} HORAS</span>
+                                    </div>
+                                    <div className="text-[11px] text-slate-500 flex items-center gap-3">
+                                      <span className="flex items-center gap-1"><Calendar className="w-3 h-3" /> {new Date(r.callDateTime).toLocaleDateString()}</span>
+                                      <span className="flex items-center gap-1"><Info className="w-3 h-3" /> {r.acceptancePlace || 'Sin destino'}</span>
+                                    </div>
+                                    <p className="text-[11px] text-slate-400 mt-2 line-clamp-1 italic">"{r.activity}"</p>
+                                    <div className="text-[9px] text-slate-400 mt-1">Médico: {r.doctorName}</div>
+
+                                    {r.authorizedStatus && (
+                                      <div className="mt-3 flex flex-wrap items-center gap-3">
+                                        {r.authorizedStatus === 'signed' ? (
+                                          <span className="text-[10px] bg-emerald-50 border border-emerald-200 text-emerald-700 px-2.5 py-1 rounded-lg font-black flex items-center gap-1">
+                                            ✔️ Autorizado por {r.calledBy}
+                                          </span>
                                         ) : (
-                                          <span className="text-[9px] bg-amber-100 text-amber-800 px-1.5 py-0.5 rounded font-bold whitespace-nowrap">
-                                            ⏳ Pendiente ({r.calledBy})
+                                          <span className="text-[10px] bg-amber-50 border border-amber-200 text-amber-700 px-2.5 py-1 rounded-lg font-black flex items-center gap-1">
+                                            ⏳ Pendiente de Firma ({r.calledBy})
                                           </span>
                                         )}
-                                      </td>
-                                      <td className="p-4">
-                                        <div className="flex items-center justify-center gap-1">
-                                          <button
-                                            onClick={() => exportRuralAvailabilityPDF(r)}
-                                            className="p-1.5 bg-sky-50 text-sky-600 rounded-lg hover:bg-sky-500 hover:text-white transition-all"
-                                            title="Exportar Reporte PDF"
-                                          >
-                                            <FileDown className="w-3.5 h-3.5" />
-                                          </button>
-                                          {isAdminUser && (
-                                            <button 
-                                              onClick={async () => {
-                                                if(confirm("¿Eliminar este registro?")) {
-                                                  await deleteDoc(doc(db, 'ruralAvailability', r.id));
-                                                }
-                                              }}
-                                              className="p-1.5 bg-rose-50 text-rose-500 rounded-lg hover:bg-rose-500 hover:text-white transition-all"
-                                              title="Eliminar registro"
-                                            >
-                                              <Trash2 className="w-3.5 h-3.5" />
-                                            </button>
-                                          )}
-                                        </div>
-                                      </td>
-                                    </tr>
-                                  );
-                                })}
-                            </tbody>
-                          </table>
-                        </div>
-                      ) : (
-                        <div className="space-y-4">
-                          {ruralAvailabilities
-                          .filter(r => (isAdminUser ? true : r.doctorId === session?.doctorId))
-                          .sort((a,b) => b.callDateTime - a.callDateTime)
-                          .map(r => (
-                          <div key={r.id} className="bg-slate-50 p-5 rounded-2xl border border-slate-200 flex flex-wrap justify-between items-center gap-4 group hover:border-emerald-500/40 transition-all">
-                             <div>
-                                <div className="flex items-center gap-2 mb-1">
-                                  <span className="font-bold text-slate-800 uppercase text-sm"> paciente: {r.patientName}</span>
-                                  <span className="text-[10px] bg-emerald-100 text-emerald-700 px-2 py-0.5 rounded font-black border border-emerald-200">{r.totalHours} HORAS</span>
-                                </div>
-                                <div className="text-[11px] text-slate-500 flex items-center gap-3">
-                                   <span className="flex items-center gap-1"><Calendar className="w-3 h-3" /> {new Date(r.callDateTime).toLocaleDateString()}</span>
-                                   <span className="flex items-center gap-1"><Info className="w-3 h-3" /> {r.acceptancePlace || 'Sin destino'}</span>
-                                </div>
-                                <p className="text-[11px] text-slate-400 mt-2 line-clamp-1 italic">"{r.activity}"</p>
-                                <div className="text-[9px] text-slate-400 mt-1">Médico: {r.doctorName}</div>
-
-                                {r.authorizedStatus && (
-                                  <div className="mt-3 flex flex-wrap items-center gap-3">
-                                    {r.authorizedStatus === 'signed' ? (
-                                      <span className="text-[10px] bg-emerald-50 border border-emerald-200 text-emerald-700 px-2.5 py-1 rounded-lg font-black flex items-center gap-1">
-                                        ✔️ Autorizado por {r.calledBy}
-                                      </span>
-                                    ) : (
-                                      <span className="text-[10px] bg-amber-50 border border-amber-200 text-amber-700 px-2.5 py-1 rounded-lg font-black flex items-center gap-1">
-                                        ⏳ Pendiente de Firma ({r.calledBy})
-                                      </span>
-                                    )}
-                                    
-                                    {r.authorizerSignature && (
-                                      <div className="bg-white border border-slate-200 p-1 rounded-lg flex items-center gap-2 shadow-sm">
-                                        <span className="text-[9px] text-slate-400 uppercase font-black px-1">Firma:</span>
-                                        <img src={r.authorizerSignature} alt="Firma Digital" className="h-6 w-auto object-contain bg-slate-50 border border-slate-100 rounded" referrerPolicy="no-referrer" />
+                                        
+                                        {r.authorizerSignature && (
+                                          <div className="bg-white border border-slate-200 p-1 rounded-lg flex items-center gap-2 shadow-sm">
+                                            <span className="text-[9px] text-slate-400 uppercase font-black px-1">Firma:</span>
+                                            <img src={r.authorizerSignature} alt="Firma Digital" className="h-6 w-auto object-contain bg-slate-50 border border-slate-100 rounded" referrerPolicy="no-referrer" />
+                                          </div>
+                                        )}
                                       </div>
                                     )}
                                   </div>
-                                )}
-                             </div>
-                             <div className="flex items-center gap-2">
-                               <button
-                                 onClick={() => exportRuralAvailabilityPDF(r)}
-                                 className="p-3 bg-sky-500/10 text-sky-600 rounded-xl hover:bg-sky-500 hover:text-white transition-all flex items-center justify-center gap-1.5 font-bold text-xs"
-                                 title="Exportar Reporte PDF con firma y hash"
-                               >
-                                 <FileDown className="w-4 h-4" />
-                                 <span>PDF</span>
-                               </button>
-                               {isAdminUser && (
-                               <button 
-                                onClick={async () => {
-                                  if(confirm("¿Eliminar este registro?")) {
-                                    await deleteDoc(doc(db, 'ruralAvailability', r.id));
-                                  }
-                                }}
-                                className="p-3 bg-rose-500/10 text-rose-500 rounded-xl hover:bg-rose-500 hover:text-white transition-all opacity-0 group-hover:opacity-100"
-                               >
-                                 <Trash2 className="w-5 h-5" />
-                               </button>
-                              )}
-                             </div>
-                             {false && (null
-                             )}
+                                  <div className="flex items-center gap-2">
+                                    <button
+                                      onClick={() => exportRuralAvailabilityPDF(r)}
+                                      className="p-3 bg-sky-500/10 text-sky-600 rounded-xl hover:bg-sky-500 hover:text-white transition-all flex items-center justify-center gap-1.5 font-bold text-xs"
+                                      title="Exportar Reporte PDF con firma y hash"
+                                    >
+                                      <FileDown className="w-4 h-4" />
+                                      <span>PDF</span>
+                                    </button>
+                                    {isAdminUser && (
+                                      <button 
+                                        onClick={async () => {
+                                          if(confirm("¿Eliminar este registro?")) {
+                                            await deleteDoc(doc(db, 'ruralAvailability', r.id));
+                                          }
+                                        }}
+                                        className="p-3 bg-rose-500/10 text-rose-500 rounded-xl hover:bg-rose-500 hover:text-white transition-all opacity-0 group-hover:opacity-100"
+                                      >
+                                        <Trash2 className="w-5 h-5" />
+                                      </button>
+                                    )}
+                                  </div>
+                                </div>
+                              ))}
                           </div>
-                        ))}
-                      </div>
-                      )}
+                        );
+                      })()}
                    </div>
                 </div>
 
@@ -8180,9 +8383,9 @@ Usa un tono directivo, formal y conciso en español. Solo usa negritas y viñeta
         {[
           { id: 'home', icon: ChevronRight, label: 'Home' },
           { id: 'turnos', icon: Calendar, label: 'Turnos' },
+          { id: 'rural', icon: MapPin, label: 'Rural' },
           { id: 'calendario-test', icon: Calendar, label: 'Mi Cal' },
           { id: 'census', icon: ClipboardList, label: 'Censo' },
-          { id: 'rural', icon: MapPin, label: 'Rural' },
           { id: 'committee', icon: FileCheck, label: 'Comité' },
           { id: 'pic', icon: BookOpen, label: 'PIC' },
           { id: 'solicitudes', icon: Send, label: 'Solicitudes' },

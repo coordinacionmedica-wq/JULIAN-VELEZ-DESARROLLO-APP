@@ -190,7 +190,7 @@ export const AdminToolbox: React.FC<AdminToolboxProps> = ({
             email: "carlos.gomez@correohdsa.gov.co",
             telefono: "3127483921",
             cat: "Rural" as const,
-            rol: "Médico Rural",
+            rol: "Médico Rural" as const,
             st: "activo" as const,
             username: "carlos.gomez",
             password: "password123",
@@ -205,7 +205,7 @@ export const AdminToolbox: React.FC<AdminToolboxProps> = ({
             email: "valentina.restrepo@correohdsa.gov.co",
             telefono: "3178492049",
             cat: "Rural" as const,
-            rol: "Médico Rural",
+            rol: "Médico Rural" as const,
             st: "activo" as const,
             username: "valentina.restrepo",
             password: "password123",
@@ -220,7 +220,7 @@ export const AdminToolbox: React.FC<AdminToolboxProps> = ({
             email: "mateo.espinosa@correohdsa.gov.co",
             telefono: "3209485731",
             cat: "Rural" as const,
-            rol: "Médico Rural",
+            rol: "Médico Rural" as const,
             st: "activo" as const,
             username: "mateo.espinosa",
             password: "password123",
@@ -337,7 +337,11 @@ export const AdminToolbox: React.FC<AdminToolboxProps> = ({
           netHours: net
         };
 
-        await setDoc(doc(db, 'ruralAvailability', id), record);
+        const cleanRecord = Object.fromEntries(
+          Object.entries(record).filter(([_, v]) => v !== undefined)
+        );
+
+        await setDoc(doc(db, 'ruralAvailability', id), cleanRecord);
       }
 
       onNotify("¡Se han generado exitosamente 10 ejemplos realistas de disponibilidad rural!", "success");
@@ -864,8 +868,6 @@ export const AdminToolbox: React.FC<AdminToolboxProps> = ({
             </div>
           );
         })()}
-      </div>
-        </div>
       </div>
     </div>
   );
