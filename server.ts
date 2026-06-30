@@ -1,200 +1,264 @@
-import express from "express";
-import path from "path";
-import { fileURLToPath } from "url";
-import { createServer as createViteServer } from "vite";
-import nodemailer from "nodemailer";
-import dotenv from "dotenv";
-import { initializeApp } from "firebase-admin/app";
-import { getFirestore } from "firebase-admin/firestore";
-import { getAuth } from "firebase-admin/auth";
-import fs from "fs";
+import express, { Express, Request, Response, NextFunction } from 'express';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import { createServer as createViteServer } from 'vite';
+import dotenv from 'dotenv';
+import helmet from 'helmet';
+import rateLimit from 'express-rate-limit';
+
+import {
+  loadFirebaseConfig,
+  initializeFirebaseAdmin,
+} from './src/services/firebaseService';
+import { loadSmtpConfig, createEmailTransporter, sendEmail } from './src/services/emailService';
+import {
+  checkDoctorByCedula,
+  authenticateDoctor,
+  registerDoctor,
+} from './src/services/authService';
+import {
+  validateRequired,
+  validateContentType,
+} from './src/middleware/validation';
+import { errorHandler, notFoundHandler } from './src/middleware/errorHandler';
+import { logger } from './src/services/logger';
+import { sendErrorResponse } from './src/services/api';
 
 dotenv.config();
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// Initialize Firebase Admin
-const configPath = path.join(__dirname, "firebase-applet-config.json");
-let dbAdmin: any = null;
+// Type for Firebase services
+interface FirebaseServices {
+  db: any;
+  auth: any;
+}
 
-if (fs.existsSync(configPath)) {
+let firebaseServices: FirebaseServices | null = null;
+
+/**
+ * Initialize Firebase services
+ */
+function initializeServices(): void {
+  const configPath = path.join(__dirname, 'firebase-applet-config.json');
+  const firebaseConfig = loadFirebaseConfig(configPath);
+
+  if (!firebaseConfig) {
+    logger.warn('Firebase configuration not loaded. Some features will be unavailable.');
+    return;
+  }
+
   try {
-    const firebaseConfig = JSON.parse(fs.readFileSync(configPath, "utf-8"));
-    const appInfo = initializeApp({
-      projectId: firebaseConfig.projectId
-    });
-    // Use the specific database ID if provided in the config
-    dbAdmin = firebaseConfig.firestoreDatabaseId 
-      ? getFirestore(appInfo, firebaseConfig.firestoreDatabaseId)
-      : getFirestore(appInfo);
+    const { db, auth } = initializeFirebaseAdmin(firebaseConfig);
+    firebaseServices = { db, auth };
+    logger.info('Firebase services initialized successfully');
   } catch (err) {
-    console.error("Error initializing Firebase Admin:", err);
+    logger.error('Failed to initialize Firebase services:', err);
   }
 }
 
-async function startServer() {
+/**
+ * Create and configure Express app
+ */
+function createApp(): Express {
   const app = express();
-  const PORT = 3000;
 
-  app.use(express.json());
+  // Security middleware
+  app.use(helmet());
 
-  // API Route for Self-Registration
-  app.post("/api/register-doctor", async (req, res) => {
-    if (!dbAdmin) {
-      return res.status(500).json({ success: false, error: "Database not initialized on server" });
-    }
+  // Rate limiting
+  const limiter = rateLimit({
+    windowMs: 15 * 60 * 1000, // 15 minutes
+    max: 100, // limit each IP to 100 requests per windowMs
+    message: 'Too many requests from this IP, please try again later.',
+  });
+  app.use(limiter);
 
-    const { doctorId, doctorData, isUpdate } = req.body;
+  // Body parsing
+  app.use(express.json({ limit: '10mb' }));
+  app.use(express.urlencoded({ limit: '10mb', extended: true }));
 
-    try {
-      const docRef = dbAdmin.collection("doctors").doc(doctorId.toString());
-      
-      if (isUpdate) {
-        // Double check it doesn't already have a username to prevent spoofing
-        const existingDoc = await docRef.get();
-        if (existingDoc.exists && existingDoc.data().username) {
-          return res.status(400).json({ success: false, error: "La cuenta ya está activada" });
+  // Request logging middleware
+  app.use((req: Request, res: Response, next: NextFunction) => {
+    logger.debug(`${req.method} ${req.path}`);
+    next();
+  });
+
+  return app;
+}
+
+/**
+ * Setup API routes
+ */
+function setupApiRoutes(app: Express): void {
+  const apiRouter = express.Router();
+
+  // Doctor registration endpoint
+  apiRouter.post(
+    '/register-doctor',
+    validateRequired(['doctorId', 'doctorData']),
+    async (req: Request, res: Response) => {
+      try {
+        if (!firebaseServices) {
+          return sendErrorResponse(res, 'Firebase not initialized', 500);
         }
-        await docRef.update(doctorData);
-      } else {
-        await docRef.set(doctorData);
+
+        const { doctorId, doctorData, isUpdate } = req.body;
+
+        const customToken = await registerDoctor(
+          firebaseServices.db,
+          firebaseServices.auth,
+          doctorId,
+          doctorData,
+          isUpdate || false
+        );
+
+        res.json({ success: true, customToken });
+      } catch (error) {
+        logger.error('Registration error:', error);
+        sendErrorResponse(res, error);
       }
-
-      // Generate Custom Token for Firebase Auth
-      const customToken = await getAuth().createCustomToken(doctorId.toString());
-
-      res.json({ success: true, customToken });
-    } catch (error) {
-      console.error("Error in server-side registration:", error);
-      res.status(500).json({ success: false, error: (error as Error).message });
     }
-  });
+  );
 
-  // API Route to verify if a doctor exists by cedula
-  app.post("/api/check-doctor", async (req, res) => {
-    if (!dbAdmin) {
-      return res.status(500).json({ success: false, error: "Database not initialized" });
-    }
-    const { cedula } = req.body;
-    try {
-      const q = await dbAdmin.collection("doctors").where("cedula", "==", cedula).get();
-      if (q.empty) {
-        return res.json({ success: true, exists: false });
+  // Check if doctor exists
+  apiRouter.post(
+    '/check-doctor',
+    validateRequired(['cedula']),
+    async (req: Request, res: Response) => {
+      try {
+        if (!firebaseServices) {
+          return sendErrorResponse(res, 'Firebase not initialized', 500);
+        }
+
+        const { cedula } = req.body;
+        const result = await checkDoctorByCedula(firebaseServices.db, cedula);
+
+        res.json({ success: true, ...result });
+      } catch (error) {
+        logger.error('Doctor check error:', error);
+        sendErrorResponse(res, error);
       }
-      const data = q.docs[0].data();
-      res.json({ 
-        success: true, 
-        exists: true, 
-        id: data.id,
-        username: data.username,
-        nombre: data.nombre 
-      });
-    } catch (error) {
-      res.status(500).json({ success: false, error: (error as Error).message });
     }
-  });
+  );
 
-  // API Route for Doctor Login
-  app.post("/api/login", async (req, res) => {
-    if (!dbAdmin) {
-      return res.status(500).json({ success: false, error: "Database not initialized on server" });
-    }
+  // Doctor login endpoint
+  apiRouter.post(
+    '/login',
+    validateRequired(['u', 'p']),
+    async (req: Request, res: Response) => {
+      try {
+        if (!firebaseServices) {
+          return sendErrorResponse(res, 'Firebase not initialized', 500);
+        }
 
-    const { u, p } = req.body;
+        const { u: username, p: password } = req.body;
 
-    try {
-      const doctorsRef = dbAdmin.collection("doctors");
-      const q = await doctorsRef.where("username", "==", u).where("password", "==", p).get();
+        const loginResult = await authenticateDoctor(
+          firebaseServices.db,
+          firebaseServices.auth,
+          username,
+          password
+        );
 
-      if (q.empty) {
-        return res.json({ success: false, error: "Credenciales incorrectas" });
+        res.json({ success: true, ...loginResult });
+      } catch (error) {
+        logger.error('Login error:', error);
+        const message = error instanceof Error ? error.message : 'Login failed';
+        res.status(401).json({ success: false, error: message });
       }
+    }
+  );
 
-      const doc = q.docs[0];
-      const data = doc.data();
+  // Email sending endpoint
+  apiRouter.post(
+    '/send-email',
+    validateRequired(['to', 'subject'],),
+    async (req: Request, res: Response) => {
+      try {
+        const smtpConfig = loadSmtpConfig();
 
-      if (data.st !== "activo") {
-        return res.json({ success: false, error: "Usuario inactivo" });
+        if (!smtpConfig) {
+          logger.warn('SMTP not configured');
+          return res.status(503).json({
+            success: false,
+            error: 'Email service not configured',
+          });
+        }
+
+        const { to, subject, text, html } = req.body;
+        const transporter = createEmailTransporter(smtpConfig);
+
+        const messageId = await sendEmail(transporter, smtpConfig, {
+          to,
+          subject,
+          text,
+          html,
+        });
+
+        logger.info(`Email sent: ${messageId}`);
+        res.json({ success: true, messageId });
+      } catch (error) {
+        logger.error('Email sending error:', error);
+        sendErrorResponse(res, error);
       }
-
-      const doctorId = data.id.toString();
-      const customToken = await getAuth().createCustomToken(doctorId);
-
-      res.json({
-        success: true,
-        customToken,
-        session: {
-          r: "doctor",
-          n: data.nombre,
-          doctorId: data.id
-        },
-        passwordLastChanged: data.passwordLastChanged
-      });
-    } catch (error) {
-      console.error("Error in server-side login:", error);
-      res.status(500).json({ success: false, error: (error as Error).message });
     }
-  });
+  );
 
-  // API Route for sending emails
-  app.post("/api/send-email", async (req, res) => {
-    const { to, subject, text, html } = req.body;
+  app.use('/api', apiRouter);
+}
 
-    const host = process.env.SMTP_HOST;
-    const user = process.env.SMTP_USER;
-    const pass = process.env.SMTP_PASS;
-
-    if (!host || !user || !pass) {
-      console.warn("SMTP credentials not configured. Email NOT sent.");
-      return res.status(200).json({ success: false, message: "SMTP not configured" });
-    }
-
-    try {
-      const transporter = nodemailer.createTransport({
-        host: host,
-        port: parseInt(process.env.SMTP_PORT || "587"),
-        secure: process.env.SMTP_SECURE === "true", // true for 465, false for other ports
-        auth: {
-          user: user,
-          pass: pass,
-        },
-      });
-
-      const info = await transporter.sendMail({
-        from: `"${process.env.SMTP_FROM_NAME || 'ESE Roldanillo'}" <${process.env.SMTP_FROM_EMAIL || user}>`,
-        to,
-        subject,
-        text,
-        html,
-      });
-
-      console.log("Message sent: %s", info.messageId);
-      res.json({ success: true, messageId: info.messageId });
-    } catch (error) {
-      console.error("Error sending email:", error);
-      res.status(500).json({ success: false, error: (error as Error).message });
-    }
-  });
-
-  // Vite middleware for development
-  if (process.env.NODE_ENV !== "production") {
+/**
+ * Setup static file serving
+ */
+async function setupStaticServing(app: Express): Promise<void> {
+  if (process.env.NODE_ENV === 'production') {
+    const distPath = path.join(process.cwd(), 'dist');
+    app.use(express.static(distPath));
+    app.get('*', (req: Request, res: Response) => {
+      res.sendFile(path.join(distPath, 'index.html'));
+    });
+  } else {
+    // Development: use Vite middleware
     const vite = await createViteServer({
       server: { middlewareMode: true },
-      appType: "spa",
+      appType: 'spa',
     });
     app.use(vite.middlewares);
-  } else {
-    const distPath = path.join(process.cwd(), "dist");
-    app.use(express.static(distPath));
-    app.get("*", (req, res) => {
-      res.sendFile(path.join(distPath, "index.html"));
-    });
   }
+}
 
-  app.listen(PORT, "0.0.0.0", () => {
-    console.log(`Server running on http://localhost:${PORT}`);
+/**
+ * Start the server
+ */
+async function startServer(): Promise<void> {
+  const PORT = parseInt(process.env.PORT || '3000', 10);
+
+  // Initialize Firebase
+  initializeServices();
+
+  // Create app
+  const app = createApp();
+
+  // Setup routes
+  setupApiRoutes(app);
+
+  // Setup static serving (should be last)
+  await setupStaticServing(app);
+
+  // Error handling middleware (should be last)
+  app.use(notFoundHandler);
+  app.use(errorHandler);
+
+  // Start listening
+  app.listen(PORT, '0.0.0.0', () => {
+    logger.info(`Server running on http://localhost:${PORT}`);
   });
 }
 
-startServer();
+// Start server
+startServer().catch((err) => {
+  logger.error('Failed to start server:', err);
+  process.exit(1);
+});
