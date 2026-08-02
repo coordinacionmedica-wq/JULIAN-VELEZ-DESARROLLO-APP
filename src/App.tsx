@@ -1195,7 +1195,8 @@ export default function App() {
     const provider = new GoogleAuthProvider();
     provider.addScope('https://www.googleapis.com/auth/drive');
     provider.addScope('https://www.googleapis.com/auth/spreadsheets');
-    
+    provider.addScope('https://www.googleapis.com/auth/documents');
+
     try {
       setIsGoogleAuthing(true);
       const result = await signInWithPopup(auth, provider);

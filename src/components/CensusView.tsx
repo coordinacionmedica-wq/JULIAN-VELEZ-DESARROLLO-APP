@@ -227,6 +227,7 @@ export function CensusView({ currentUser, isAdmin, isAuthenticated, doctors }: P
     if (!isSheet) return;
 
     try {
+      setSyncStatus('Sincronizando');
       const values = [
         ['CAMA', 'FECHA_INGRESO', 'PACIENTE', 'EDAD', 'EPS', 'SECCION', 'DIAGNOSTICO', 'MANEJO', 'PARACLINICOS', 'PENDIENTE', 'REMITIDO', 'ESTADO_REMITIDO', 'ESPECIALIDAD', 'MEDICO_ENTREGA', 'MEDICO_RECIBE', 'ACTUALIZADO_POR', 'FECHA_ACTUALIZACION'],
         ...updatedPatientsList.map(p => [
@@ -251,8 +252,13 @@ export function CensusView({ currentUser, isAdmin, isAuthenticated, doctors }: P
       ];
       await GoogleDriveService.updateSheetValues(selectedDriveFile.id, 'Sheet1!A1', values);
       console.log("Auto-saved changes to Google Sheets successfully in background.");
-    } catch (err) {
+      setSyncStatus('Sincronizado');
+    } catch (err: any) {
       console.error("Auto background Sheets sync failed:", err);
+      setSyncStatus('Error');
+      if (err.message?.includes('token') || err.message?.includes('sesión de Google') || err.message?.includes('expired') || err.message?.includes('Permisos insuficientes')) {
+        setHasGoogleToken(false);
+      }
     }
   };
 
@@ -261,10 +267,12 @@ export function CensusView({ currentUser, isAdmin, isAuthenticated, doctors }: P
     const token = localStorage.getItem('google_access_token');
     if (!token) {
       console.warn("No Google Drive access token found. Single patient Drive Doc Sync inactive.");
+      setHasGoogleToken(false);
       return;
     }
 
     try {
+      setSyncStatus('Sincronizando');
       // 1. Get the patient section/department
       const section = updatedFields.section || patient.section || 'HOSPITALIZACION';
       
@@ -290,8 +298,13 @@ export function CensusView({ currentUser, isAdmin, isAuthenticated, doctors }: P
       // 5. Save back to Google Doc
       await GoogleDriveService.updateGoogleDocText(docInfo.id, updatedText);
       console.log(`Successfully sync'd bed "${mergedPatient.bed}" to Drive Google Doc "${docInfo.name}" (${docInfo.id})`);
-    } catch (err) {
+      setSyncStatus('Sincronizado');
+    } catch (err: any) {
       console.error("Error in triggerSinglePatientDriveDocSync:", err);
+      setSyncStatus('Error');
+      if (err.message?.includes('token') || err.message?.includes('sesión de Google') || err.message?.includes('expired') || err.message?.includes('Permisos insuficientes')) {
+        setHasGoogleToken(false);
+      }
     }
   };
 
